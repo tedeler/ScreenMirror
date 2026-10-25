@@ -122,6 +122,8 @@ pub struct App {
     selection_wait_seq: Option<u64>,
     source: Option<String>,
     target: Option<String>,
+    /// `lastScreen` of the Plasma toolbar, kept across a failed config read.
+    panel_screen: Option<i32>,
     sync_done: bool,
 }
 
@@ -129,8 +131,98 @@ fn env_output(var: &str) -> Option<String> {
     std::env::var(var).ok().filter(|s| !s.is_empty())
 }
 
-fn is_internal(name: &str) -> bool {
-    ["eDP", "LVDS", "DSI"].iter().any(|p| name.starts_with(p))
+/// Plasma writes this when the desktop shell is `org.kde.plasma.desktop`.
+fn panel_config_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|d| !d.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+    Some(base.join("plasma-org.kde.plasma.desktop-appletsrc"))
+}
+
+/// Screen index of the Plasma toolbar, from `plasma-org.kde.plasma.desktop-appletsrc`.
+///
+/// That index is into KWin's output order (`kde_output_order_v1`), which is the
+/// same order Plasma uses for `lastScreen`. It is not a connector name and not
+/// "whatever is called eDP". Moving the panel writes a new `lastScreen`.
+fn toolbar_screen(text: &str) -> Option<i32> {
+    struct Cont {
+        plugin: String,
+        formfactor: i32,
+        screen: i32,
+        toolbar: bool,
+        seen: bool,
+    }
+    impl Default for Cont {
+        fn default() -> Self {
+            // -1 means "no lastScreen yet", so a half-read containment is not screen 0.
+            Cont { plugin: String::new(), formfactor: 0, screen: -1, toolbar: false, seen: false }
+        }
+    }
+    let mut conts: HashMap<u32, Cont> = HashMap::new();
+    let mut section: Option<Section> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(sec) = section_kind(line) {
+            section = Some(sec);
+            if let Section::Cont(id) = sec {
+                conts.entry(id).or_default().seen = true;
+            }
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else { continue };
+        match section {
+            Some(Section::Cont(id)) => {
+                let c = conts.entry(id).or_default();
+                c.seen = true;
+                match key {
+                    "plugin" => c.plugin = value.to_string(),
+                    "formfactor" => c.formfactor = value.parse().unwrap_or(0),
+                    "lastScreen" => c.screen = value.parse().unwrap_or(-1),
+                    _ => {}
+                }
+            }
+            Some(Section::Applet(id)) if key == "plugin" => {
+                if matches!(
+                    value,
+                    "org.kde.plasma.icontasks" | "org.kde.plasma.kickoff" | "org.kde.plasma.systemtray"
+                ) {
+                    conts.entry(id).or_default().toolbar = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut panels: Vec<&Cont> = conts
+        .values()
+        .filter(|c| c.seen && c.screen >= 0 && (c.plugin == "org.kde.panel" || c.formfactor == 2 || c.formfactor == 3))
+        .collect();
+    if panels.iter().any(|c| c.toolbar) {
+        panels.retain(|c| c.toolbar);
+    }
+    panels.sort_by_key(|c| c.screen);
+    panels.first().map(|c| c.screen)
+}
+
+#[derive(Clone, Copy)]
+enum Section {
+    Cont(u32),
+    Applet(u32),
+}
+
+/// `[Containments][N]` is a containment. `[Containments][N][Applets][M]` is one
+/// of its applets. Deeper sections (system-tray internals) are ignored.
+fn section_kind(line: &str) -> Option<Section> {
+    if !line.starts_with('[') || !line.ends_with(']') {
+        return None;
+    }
+    let parts: Vec<&str> = line[1..line.len() - 1].split("][").collect();
+    let id = |s: &str| s.parse().ok();
+    match parts.as_slice() {
+        ["Containments", id_s] => Some(Section::Cont(id(id_s)?)),
+        ["Containments", id_s, "Applets", _] => Some(Section::Applet(id(id_s)?)),
+        _ => None,
+    }
 }
 
 impl App {
@@ -158,6 +250,7 @@ impl App {
             selection_wait_seq: None,
             source: None,
             target: None,
+            panel_screen: None,
             sync_done: false,
         };
         let registry = app.conn.new_id();
@@ -435,30 +528,64 @@ impl App {
         self.outputs.iter().find(|o| o.name == name).map(|o| o.id)
     }
 
-    /// Picks the source (laptop panel) and target (second screen) outputs.
-    pub fn choose_outputs(&self) -> (Option<String>, Option<String>) {
+    /// Outputs in Plasma's screen order: `kde_output_order_v1`, then any
+    /// connected output that order has not mentioned yet.
+    fn ordered_outputs(&self) -> Vec<&OutputInfo> {
         let ready: Vec<&OutputInfo> = self.outputs.iter().filter(|o| o.done && !o.name.is_empty()).collect();
-        let ordered: Vec<&OutputInfo> = {
-            let mut v: Vec<&OutputInfo> =
-                self.output_order.iter().filter_map(|n| ready.iter().find(|o| &o.name == n).copied()).collect();
-            v.extend(ready.iter().filter(|o| !self.output_order.contains(&o.name)).copied());
-            v
-        };
+        let mut v: Vec<&OutputInfo> =
+            self.output_order.iter().filter_map(|n| ready.iter().find(|o| &o.name == n).copied()).collect();
+        v.extend(ready.iter().filter(|o| !self.output_order.contains(&o.name)).copied());
+        v
+    }
+
+    fn refresh_panel_screen(&mut self) {
+        let Some(path) = panel_config_path() else { return };
+        match std::fs::read_to_string(path) {
+            Ok(text) => self.panel_screen = toolbar_screen(&text),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => self.panel_screen = None,
+            Err(_) => {}
+        }
+    }
+
+    /// Source is the output that holds the Plasma toolbar. Target is the other one.
+    pub fn choose_outputs(&self) -> (Option<String>, Option<String>) {
+        let ordered = self.ordered_outputs();
+        let panel = self
+            .panel_screen
+            .filter(|i| *i >= 0)
+            .and_then(|i| ordered.get(i as usize).map(|o| o.name.clone()));
         let source = env_output("SCREENMIRROR_SOURCE")
-            .filter(|n| ready.iter().any(|o| &o.name == n))
-            .or_else(|| ordered.iter().find(|o| is_internal(&o.name)).map(|o| o.name.clone()))
+            .filter(|n| ordered.iter().any(|o| &o.name == n))
+            .or(panel)
             .or_else(|| ordered.first().map(|o| o.name.clone()));
         let target = env_output("SCREENMIRROR_TARGET")
-            .filter(|n| ready.iter().any(|o| &o.name == n) && Some(n) != source.as_ref())
+            .filter(|n| ordered.iter().any(|o| &o.name == n) && Some(n) != source.as_ref())
             .or_else(|| ordered.iter().find(|o| Some(&o.name) != source.as_ref()).map(|o| o.name.clone()));
         (source, target)
     }
 
     fn reconfigure_outputs(&mut self) -> io::Result<()> {
         self.outputs_dirty = false;
+        self.refresh_panel_screen();
         let (source, target) = self.choose_outputs();
         if source != self.source {
-            eprintln!("screenmirror: source screen: {}", source.as_deref().unwrap_or("(none)"));
+            if let Some(sel) = self.selection.take() {
+                self.destroy_layer(sel.surf)?;
+                self.selection_wait_seq = None;
+                self.shared.update(|st| st.selecting = false);
+            }
+            let why = if env_output("SCREENMIRROR_SOURCE").is_some() {
+                "override"
+            } else if self.panel_screen.is_some_and(|i| {
+                self.ordered_outputs().get(i as usize).is_some_and(|o| Some(&o.name) == source.as_ref())
+            }) {
+                "panel"
+            } else if source.is_some() {
+                "first screen"
+            } else {
+                "none"
+            };
+            eprintln!("screenmirror: source screen: {} ({why})", source.as_deref().unwrap_or("(none)"));
             self.source = source.clone();
             self.shared.update(|st| {
                 st.source = source;
@@ -753,14 +880,14 @@ impl App {
         self.reconfigure_outputs()?;
         let mut wake = std::fs::File::from(wake);
         loop {
-            if self.outputs_dirty {
-                self.reconfigure_outputs()?;
-            }
+            // Re-read the panel config even when outputs are unchanged, so dragging
+            // the toolbar to the other screen flips source and target.
+            self.reconfigure_outputs()?;
             let mut fds = [
                 sys::PollFd { fd: self.conn.raw_fd(), events: sys::POLLIN, revents: 0 },
                 sys::PollFd { fd: wake.as_raw_fd(), events: sys::POLLIN, revents: 0 },
             ];
-            sys::poll(&mut fds, -1)?;
+            sys::poll(&mut fds, 500)?;
             if fds[0].revents & (sys::POLLIN | sys::POLLERR | sys::POLLHUP) != 0 {
                 for ev in self.conn.read_events()? {
                     self.handle_event(ev)?;
@@ -774,6 +901,72 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::toolbar_screen;
+
+    const SAMPLE: &str = r#"
+[Containments][1]
+formfactor=0
+lastScreen=0
+plugin=org.kde.plasma.folder
+
+[Containments][2]
+formfactor=2
+lastScreen=0
+location=4
+plugin=org.kde.panel
+
+[Containments][2][Applets][3]
+plugin=org.kde.plasma.kickoff
+
+[Containments][2][Applets][5]
+plugin=org.kde.plasma.icontasks
+
+[Containments][2][Applets][7]
+formfactor=0
+lastScreen=-1
+plugin=org.kde.plasma.systemtray
+
+[Containments][2][Applets][7][Applets][10]
+plugin=org.kde.kscreen
+
+[Containments][22]
+formfactor=0
+lastScreen=1
+plugin=org.kde.plasma.folder
+"#;
+
+    #[test]
+    fn toolbar_is_panel_screen_not_desktop() {
+        assert_eq!(toolbar_screen(SAMPLE), Some(0));
+    }
+
+    #[test]
+    fn moving_the_panel_flips_the_screen() {
+        // The panel's lastScreen is the second one; the desktop folder's comes first.
+        let mut n = 0;
+        let moved: String = SAMPLE
+            .split_inclusive('\n')
+            .map(|line| {
+                if line.starts_with("lastScreen=") {
+                    n += 1;
+                    if n == 2 { "lastScreen=1\n" } else { line }
+                } else {
+                    line
+                }
+            })
+            .collect();
+        assert_eq!(toolbar_screen(&moved), Some(1));
+    }
+
+    #[test]
+    fn a_second_panel_without_the_toolbar_does_not_win() {
+        let extra = format!("{SAMPLE}\n[Containments][9]\nformfactor=2\nlastScreen=1\nplugin=org.kde.panel\n");
+        assert_eq!(toolbar_screen(&extra), Some(0));
     }
 }
 

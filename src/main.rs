@@ -14,7 +14,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 const USAGE: &str = "\
-ScreenMirror – mirror the laptop screen onto the second screen (KDE Plasma, Wayland)
+ScreenMirror – mirror the screen that has the Plasma panel onto the other screen
 
 Usage:
   screenmirror [--fps N] [--no-cursor]   run (tray icon: Full / Zoom / Black)
@@ -24,7 +24,7 @@ Usage:
   screenmirror --screenshot OUTPUT FILE  save one capture of OUTPUT as PPM
 
 Environment:
-  SCREENMIRROR_SOURCE=NAME   screen to mirror (default: eDP/LVDS/DSI panel, else primary)
+  SCREENMIRROR_SOURCE=NAME   screen to mirror (default: the one holding the Plasma panel)
   SCREENMIRROR_TARGET=NAME   screen to show the mirror on (default: the other screen)
 ";
 
