@@ -44,9 +44,16 @@ pub struct State {
     pub mode: Mode,
     /// Region selection overlay requested or active.
     pub selecting: bool,
-    /// Mirror window is mapped. Cleared by Q while that window is focused; a tray mode sets it again.
-    /// The window is created on the virtual desktop that is current at that moment.
+    /// Mirror window is mapped. Cleared by Q while that window is focused, or by
+    /// "Keine Spiegelung"; a tray mode sets it again. The window is created on the
+    /// virtual desktop that is current at that moment.
     pub showing: bool,
+    /// Full and Zoom fit the whole source inside the target and leave the rest black.
+    /// When false, the image is stretched and aspect ratio is ignored.
+    pub keep_aspect: bool,
+    /// Destroy and recreate the mirror window so it lands on the virtual desktop
+    /// that is current when the flag is set.
+    pub repin: bool,
     pub quit: bool,
     /// Output name (e.g. "eDP-1") to capture.
     pub source: Option<String>,
@@ -70,13 +77,16 @@ pub struct Shared {
 
 impl Shared {
     /// Returns the shared state and the read end of the display thread's wake-up pipe.
-    pub fn new() -> std::io::Result<(Arc<Shared>, OwnedFd)> {
+    /// `showing` is false when the process was started with `--no-mirror`.
+    pub fn new(showing: bool) -> std::io::Result<(Arc<Shared>, OwnedFd)> {
         let (r, w) = crate::sys::pipe(true)?;
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 mode: Mode::Full,
                 selecting: false,
-                showing: true,
+                showing,
+                keep_aspect: true,
+                repin: false,
                 quit: false,
                 source: None,
                 want_frame: true,

@@ -3,10 +3,12 @@
 //! * The mirror is an `xdg_toplevel` fullscreen on the secondary output, so KWin
 //!   puts it on the virtual desktop that is current when the window is created
 //!   and hides it on every other desktop. Captured frames go into `wl_shm`
-//!   buffers and `wp_viewporter` stretches them to the output size (aspect ratio
-//!   deliberately ignored); in Zoom mode the viewport source rectangle crops the
-//!   selected region, so scaling happens in the compositor. A layer-shell surface
-//!   would be forced onto every desktop, which is why the mirror is not one.
+//!   buffers. With "Seitenverhältnis behalten" off, `wp_viewporter` stretches the
+//!   frame (or, in Zoom, the selected region) to the output size. With it on, the
+//!   toplevel stays a black 1×1 buffer stretched to the output, and a centered
+//!   `wl_subsurface` shows the whole source at its own aspect ratio, so the unused
+//!   area stays black and nothing is cropped. A layer-shell surface would be
+//!   forced onto every desktop, which is why the mirror is not one.
 //! * The zoom region selector is a layer surface on the source output that
 //!   shows a dimmed freeze-frame; drag with the left button to select,
 //!   Esc / right click cancels.
@@ -71,6 +73,14 @@ struct Slot {
     busy: bool,
 }
 
+/// Centered child that shows the fitted frame. The parent surface is the black backdrop.
+#[derive(Clone, Copy)]
+struct Fit {
+    surface: u32,
+    subsurface: u32,
+    viewport: u32,
+}
+
 #[derive(Clone, Copy)]
 struct XdgWin {
     surface: u32,
@@ -83,6 +93,9 @@ struct XdgWin {
     pending_w: i32,
     pending_h: i32,
     frame_pending: bool,
+    fit: Option<Fit>,
+    /// Buffer currently committed on the toplevel, so a fitted frame never reuses it.
+    shown: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -109,7 +122,8 @@ struct Selection {
 enum Drawn {
     Nothing,
     Black,
-    Frame(u64, Mode),
+    /// Sequence, mode, and whether the frame was fitted (`true`) or stretched (`false`).
+    Frame(u64, Mode, bool),
 }
 
 #[derive(Default)]
@@ -117,6 +131,7 @@ struct Globals {
     compositor: u32,
     shm: u32,
     viewporter: u32,
+    subcompositor: u32,
     layer_shell: u32,
     wm_base: u32,
     cursor_shape: u32,
@@ -291,6 +306,7 @@ impl App {
             ("wl_compositor", app.g.compositor),
             ("wl_shm", app.g.shm),
             ("wp_viewporter", app.g.viewporter),
+            ("wl_subcompositor", app.g.subcompositor),
             ("zwlr_layer_shell_v1", app.g.layer_shell),
             ("xdg_wm_base", app.g.wm_base),
         ] {
@@ -307,6 +323,7 @@ impl App {
                 "wl_compositor" => 4,
                 "wl_shm" => 1,
                 "wp_viewporter" => 1,
+                "wl_subcompositor" => 1,
                 "zwlr_layer_shell_v1" => 3,
                 "xdg_wm_base" => 6,
                 "wp_cursor_shape_manager_v1" => 1,
@@ -319,6 +336,7 @@ impl App {
                 "wl_compositor" => Some(&mut self.g.compositor),
                 "wl_shm" => Some(&mut self.g.shm),
                 "wp_viewporter" => Some(&mut self.g.viewporter),
+                "wl_subcompositor" => Some(&mut self.g.subcompositor),
                 "zwlr_layer_shell_v1" => Some(&mut self.g.layer_shell),
                 "xdg_wm_base" => Some(&mut self.g.wm_base),
                 "wp_cursor_shape_manager_v1" => Some(&mut self.g.cursor_shape),
@@ -740,10 +758,51 @@ impl App {
             pending_w: 0,
             pending_h: 0,
             frame_pending: false,
+            fit: None,
+            shown: 0,
         })
     }
 
+    fn destroy_fit(&mut self, fit: Fit) -> io::Result<()> {
+        // The subsurface role has to go before the surface, or the compositor
+        // rejects the destroy. Unmapping is immediate.
+        self.conn.send(Req::new(fit.subsurface, 0))?;
+        self.conn.send(Req::new(fit.viewport, 0))?;
+        self.conn.send(Req::new(fit.surface, 0))
+    }
+
+    fn clear_fit(&mut self) -> io::Result<()> {
+        if let Some(fit) = self.mirror.as_mut().and_then(|m| m.fit.take()) {
+            self.destroy_fit(fit)?;
+        }
+        Ok(())
+    }
+
+    /// A subsurface of the mirror window. It starts synchronized, so its commit
+    /// is applied together with the next parent commit.
+    fn ensure_fit(&mut self) -> io::Result<()> {
+        if self.mirror.as_ref().is_some_and(|m| m.fit.is_some()) {
+            return Ok(());
+        }
+        let Some(parent) = self.mirror.as_ref().map(|m| m.surface) else {
+            return Ok(());
+        };
+        let surface = self.conn.new_id();
+        self.conn.send(Req::new(self.g.compositor, 0).u32(surface))?;
+        let subsurface = self.conn.new_id();
+        self.conn.send(Req::new(self.g.subcompositor, 1).u32(subsurface).u32(surface).u32(parent))?;
+        let viewport = self.conn.new_id();
+        self.conn.send(Req::new(self.g.viewporter, 1).u32(viewport).u32(surface))?;
+        if let Some(m) = self.mirror.as_mut() {
+            m.fit = Some(Fit { surface, subsurface, viewport });
+        }
+        Ok(())
+    }
+
     fn destroy_xdg(&mut self, w: XdgWin) -> io::Result<()> {
+        if let Some(fit) = w.fit {
+            self.destroy_fit(fit)?;
+        }
         self.objects.remove(&w.toplevel);
         self.objects.remove(&w.xdg);
         self.conn.send(Req::new(w.toplevel, 0))?;
@@ -838,7 +897,9 @@ impl App {
     }
 
     /// Index of an idle buffer of the given geometry, allocating one if needed.
-    fn slot_for(&mut self, width: u32, height: u32, stride: u32) -> io::Result<usize> {
+    /// `skip` is a buffer that is still the committed contents of some surface.
+    /// It may already have been released, and attaching it elsewhere is an error.
+    fn slot_for(&mut self, width: u32, height: u32, stride: u32, skip: u32) -> io::Result<usize> {
         let mut i = 0;
         while i < self.slots.len() {
             let s = &self.slots[i];
@@ -850,7 +911,7 @@ impl App {
                 i += 1;
             }
         }
-        if let Some(i) = self.slots.iter().position(|s| !s.busy) {
+        if let Some(i) = self.slots.iter().position(|s| !s.busy && s.buffer != skip) {
             return Ok(i);
         }
         let slot = self.new_slot(width, height, stride)?;
@@ -881,6 +942,37 @@ impl App {
         self.conn.send(Req::new(surface, 6))
     }
 
+    fn ensure_black(&mut self) -> io::Result<u32> {
+        if self.black.is_none() {
+            let mut s = self.new_slot(1, 1, 4)?;
+            s.map.as_mut_slice().copy_from_slice(&[0, 0, 0, 255]);
+            self.black = Some(s);
+        }
+        Ok(self.black.as_ref().unwrap().buffer)
+    }
+
+    fn attach_black(&mut self, surface: u32, viewport: u32, width: i32, height: i32) -> io::Result<()> {
+        let buffer = self.ensure_black()?;
+        self.conn.send(Req::new(viewport, 1).fixed(-1.0).fixed(-1.0).fixed(-1.0).fixed(-1.0))?;
+        self.conn.send(Req::new(viewport, 2).i32(width).i32(height))?;
+        self.conn.send(Req::new(surface, 1).u32(buffer).i32(0).i32(0))?;
+        self.conn.send(Req::new(surface, 9).i32(0).i32(0).i32(i32::MAX).i32(i32::MAX))
+    }
+
+    /// Applies pending parent state, including a synchronized subsurface.
+    fn commit_frame(&mut self, surface: u32) -> io::Result<()> {
+        let cb = self.conn.new_id();
+        self.objects.insert(cb, Obj::FrameCallback(surface));
+        self.conn.send(Req::new(surface, 3).u32(cb))?;
+        self.conn.send(Req::new(surface, 2).i32(0).i32(0).i32(i32::MAX).i32(i32::MAX))?;
+        self.conn.send(Req::new(surface, 6))
+    }
+
+    fn present_black(&mut self, surface: u32, viewport: u32, width: i32, height: i32, callback: bool) -> io::Result<()> {
+        let buffer = self.ensure_black()?;
+        self.present(surface, viewport, width, height, buffer, None, callback)
+    }
+
     fn draw_mirror(&mut self) -> io::Result<()> {
         let (configured, frame_pending, surface, viewport, width, height) = {
             let Some(m) = self.mirror.as_ref() else { return Ok(()) };
@@ -889,31 +981,34 @@ impl App {
         if !configured || frame_pending {
             return Ok(());
         }
-        let (mode, frame) = {
+        let (mode, frame, keep_aspect) = {
             let st = self.shared.state.lock().unwrap();
-            (st.mode, st.frame.clone())
+            (st.mode, st.frame.clone(), st.keep_aspect)
         };
         let frame = frame.filter(|_| mode != Mode::Black);
+        let keep = keep_aspect && frame.is_some();
         let want = match &frame {
-            Some(f) => Drawn::Frame(f.seq, mode),
+            Some(f) => Drawn::Frame(f.seq, mode, keep),
             None => Drawn::Black,
         };
         if want == self.drawn {
             return Ok(());
         }
-        let surf = (surface, viewport, width, height);
+        let shown = self.mirror.as_ref().map(|m| m.shown).unwrap_or(0);
+        if !keep {
+            self.clear_fit()?;
+        }
         match frame {
             None => {
-                if self.black.is_none() {
-                    let mut s = self.new_slot(1, 1, 4)?;
-                    s.map.as_mut_slice().copy_from_slice(&[0, 0, 0, 255]);
-                    self.black = Some(s);
+                let black_id = self.black.as_ref().map(|s| s.buffer).unwrap_or(0);
+                if black_id == 0 || shown != black_id {
+                    self.present_black(surface, viewport, width, height, false)?;
+                    let black_id = self.black.as_ref().unwrap().buffer;
+                    self.mirror.as_mut().unwrap().shown = black_id;
                 }
-                let buffer = self.black.as_ref().unwrap().buffer;
-                self.present(surf.0, surf.1, surf.2, surf.3, buffer, None, false)?;
             }
             Some(f) => {
-                let i = self.slot_for(f.width, f.height, f.stride)?;
+                let i = self.slot_for(f.width, f.height, f.stride, shown)?;
                 let slot = &mut self.slots[i];
                 let n = slot.map.as_mut_slice().len().min(f.data.len());
                 slot.map.as_mut_slice()[..n].copy_from_slice(&f.data[..n]);
@@ -923,7 +1018,37 @@ impl App {
                     Mode::Zoom(r) => Some(region_px(&r, f.width, f.height)),
                     _ => None,
                 };
-                self.present(surf.0, surf.1, surf.2, surf.3, buffer, src, true)?;
+                if keep {
+                    let (sw, sh) = match src {
+                        Some((_, _, w, h)) => (w, h),
+                        None => (f.width as f64, f.height as f64),
+                    };
+                    let (x, y, dw, dh) = contain_rect(sw, sh, width, height);
+                    if !matches!(self.drawn, Drawn::Frame(_, _, true)) {
+                        eprintln!(
+                            "screenmirror: keeping aspect, content {dw}×{dh} at {x},{y} on {width}×{height}"
+                        );
+                    }
+                    let black_id = self.black.as_ref().map(|s| s.buffer).unwrap_or(0);
+                    if black_id == 0 || shown != black_id {
+                        // Pending until the parent commit below, so the fitted child
+                        // and the black backdrop appear together.
+                        self.attach_black(surface, viewport, width, height)?;
+                    }
+                    self.ensure_fit()?;
+                    let fit = self.mirror.as_ref().unwrap().fit.unwrap();
+                    self.conn.send(Req::new(fit.subsurface, 1).i32(x).i32(y))?;
+                    self.present(fit.surface, fit.viewport, dw, dh, buffer, src, false)?;
+                    self.commit_frame(surface)?;
+                    let black_id = self.black.as_ref().unwrap().buffer;
+                    self.mirror.as_mut().unwrap().shown = black_id;
+                } else {
+                    if matches!(self.drawn, Drawn::Frame(_, _, true)) {
+                        eprintln!("screenmirror: stretching to {width}×{height}");
+                    }
+                    self.present(surface, viewport, width, height, buffer, src, true)?;
+                    self.mirror.as_mut().unwrap().shown = buffer;
+                }
                 self.mirror.as_mut().unwrap().frame_pending = true;
                 self.shared.update(|st| st.want_frame = true);
             }
@@ -968,7 +1093,7 @@ impl App {
             let y1 = (((y + h) * sy).ceil() as usize).min(fh);
             (x0, y0, x1, y1, (sx.max(1.0) * 2.0) as usize)
         });
-        let i = self.slot_for(snap.width, snap.height, snap.stride)?;
+        let i = self.slot_for(snap.width, snap.height, snap.stride, 0)?;
         let sel = self.selection.as_mut().unwrap();
         let slot = &mut self.slots[i];
         let buf = slot.map.as_mut_slice();
@@ -1026,9 +1151,10 @@ impl App {
 
     /// Reacts to changes made by the tray / capture threads.
     fn sync_state(&mut self) -> io::Result<bool> {
-        let (quit, selecting, showing, frame) = {
-            let st = self.shared.state.lock().unwrap();
-            (st.quit, st.selecting, st.showing, st.frame.clone())
+        let (quit, selecting, showing, frame, repin) = {
+            let mut st = self.shared.state.lock().unwrap();
+            let repin = std::mem::take(&mut st.repin);
+            (st.quit, st.selecting, st.showing, st.frame.clone(), repin)
         };
         if quit {
             return Ok(false);
@@ -1044,6 +1170,11 @@ impl App {
                 eprintln!("screenmirror: mirror view removed");
             }
             return Ok(true);
+        }
+        // A new xdg window is pinned to the virtual desktop that is current now.
+        if repin && self.mirror.is_some() {
+            eprintln!("screenmirror: pinning the mirror to the current virtual desktop");
+            self.destroy_mirror_window()?;
         }
         if self.mirror.is_none() {
             if let Some(t) = self.target.clone() {
@@ -1165,6 +1296,32 @@ plugin=org.kde.plasma.folder
         let extra = format!("{SAMPLE}\n[Containments][9]\nformfactor=2\nlastScreen=1\nplugin=org.kde.panel\n");
         assert_eq!(toolbar_screen(&extra), Some(0));
     }
+
+    #[test]
+    fn contain_letterboxes_the_panel_screen_onto_the_projector() {
+        // Virtual-1 is 1920×1200 (16:10). Virtual-2 is 1024×768 (4:3).
+        // scale = min(1024/1920, 768/1200) = 1024/1920, so the fitted height is 640
+        // and the bars are (768-640)/2 = 64 px.
+        assert_eq!(super::contain_rect(1920.0, 1200.0, 1024, 768), (0, 64, 1024, 640));
+    }
+
+    #[test]
+    fn contain_pillarboxes_a_tall_zoom_region() {
+        assert_eq!(super::contain_rect(100.0, 200.0, 1024, 768), (320, 0, 384, 768));
+    }
+}
+
+/// Whole source visible, centered. Destination is never larger than the target, so nothing is cropped.
+fn contain_rect(src_w: f64, src_h: f64, dst_w: i32, dst_h: i32) -> (i32, i32, i32, i32) {
+    let dst_w = dst_w.max(1);
+    let dst_h = dst_h.max(1);
+    if src_w <= 0.0 || src_h <= 0.0 {
+        return (0, 0, dst_w, dst_h);
+    }
+    let scale = (dst_w as f64 / src_w).min(dst_h as f64 / src_h);
+    let w = ((src_w * scale).floor() as i32).clamp(1, dst_w);
+    let h = ((src_h * scale).floor() as i32).clamp(1, dst_h);
+    ((dst_w - w) / 2, (dst_h - h) / 2, w, h)
 }
 
 fn region_px(r: &RegionF, fw: u32, fh: u32) -> (f64, f64, f64, f64) {

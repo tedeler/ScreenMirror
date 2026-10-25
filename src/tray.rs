@@ -20,6 +20,22 @@ const ID_ZOOM: i32 = 2;
 const ID_BLACK: i32 = 3;
 const ID_SEP: i32 = 4;
 const ID_QUIT: i32 = 5;
+const ID_NONE: i32 = 6;
+const ID_DESKTOP: i32 = 7;
+const ID_ASPECT: i32 = 8;
+
+const MENU_IDS: [i32; 8] = [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE, ID_DESKTOP, ID_SEP, ID_QUIT];
+
+struct MenuSnap {
+    mode: Mode,
+    showing: bool,
+    keep_aspect: bool,
+}
+
+fn menu_snap(shared: &Shared) -> MenuSnap {
+    let st = shared.state.lock().unwrap();
+    MenuSnap { mode: st.mode, showing: st.showing, keep_aspect: st.keep_aspect }
+}
 
 const KGLOBALACCEL: &str = "org.kde.kglobalaccel";
 const KGLOBALACCEL_PATH: &str = "/kglobalaccel";
@@ -69,17 +85,14 @@ impl TrayHandle {
     /// Tells the tray host that the menu checkmarks, icon and tooltip changed.
     pub fn mode_changed(&self) {
         let rev = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
-        let (mode, showing) = {
-            let st = self.shared.state.lock().unwrap();
-            (st.mode, st.showing)
-        };
+        let snap = menu_snap(&self.shared);
         let _ = self.sender.send(&Message::signal(MENU_PATH, MENU_IFACE, "LayoutUpdated", vec![
             Value::U32(rev),
             Value::I32(0),
         ]));
-        let updated: Vec<Value> = [ID_FULL, ID_ZOOM, ID_BLACK]
+        let updated: Vec<Value> = [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE]
             .iter()
-            .map(|&id| Value::Struct(vec![Value::I32(id), item_props(id, &mode, showing)]))
+            .map(|&id| Value::Struct(vec![Value::I32(id), item_props(id, &snap)]))
             .collect();
         let _ = self.sender.send(&Message::signal(MENU_PATH, MENU_IFACE, "ItemsPropertiesUpdated", vec![
             Value::Array("(ia{sv})".into(), updated),
@@ -91,7 +104,7 @@ impl TrayHandle {
     }
 }
 
-fn item_props(id: i32, mode: &Mode, showing: bool) -> Value {
+fn item_props(id: i32, snap: &MenuSnap) -> Value {
     let radio = |label: &str, on: bool| {
         Value::dict_sv(vec![
             ("label", Value::str(label)),
@@ -99,30 +112,35 @@ fn item_props(id: i32, mode: &Mode, showing: bool) -> Value {
             ("toggle-state", Value::I32(on as i32)),
         ])
     };
+    let MenuSnap { mode, showing, keep_aspect } = snap;
     match id {
         0 => Value::dict_sv(vec![("children-display", Value::str("submenu"))]),
-        ID_FULL => radio("Full screen", showing && matches!(mode, Mode::Full)),
-        ID_ZOOM => radio("Zoom – select region…", showing && matches!(mode, Mode::Zoom(_))),
-        ID_BLACK => radio("Black", showing && matches!(mode, Mode::Black)),
+        ID_FULL => radio("Full screen", *showing && matches!(mode, Mode::Full)),
+        ID_ZOOM => radio("Zoom – select region…", *showing && matches!(mode, Mode::Zoom(_))),
+        ID_BLACK => radio("Black", *showing && matches!(mode, Mode::Black)),
+        ID_ASPECT => Value::dict_sv(vec![
+            ("label", Value::str("Seitenverhältnis behalten")),
+            ("toggle-type", Value::str("checkmark")),
+            ("toggle-state", Value::I32(*keep_aspect as i32)),
+        ]),
+        ID_NONE => radio("Keine Spiegelung", !*showing),
+        ID_DESKTOP => Value::dict_sv(vec![("label", Value::str("Auf diese Arbeitsfläche"))]),
         ID_SEP => Value::dict_sv(vec![("type", Value::str("separator"))]),
         ID_QUIT => Value::dict_sv(vec![("label", Value::str("Quit")), ("icon-name", Value::str("application-exit"))]),
         _ => Value::dict_sv(vec![]),
     }
 }
 
-fn layout(id: i32, depth: i32, mode: &Mode, showing: bool) -> Value {
+fn layout(id: i32, depth: i32, snap: &MenuSnap) -> Value {
     let children = if id == 0 && depth != 0 {
-        [ID_FULL, ID_ZOOM, ID_BLACK, ID_SEP, ID_QUIT]
-            .iter()
-            .map(|&c| Value::variant(layout(c, depth - 1, mode, showing)))
-            .collect()
+        MENU_IDS.iter().map(|&c| Value::variant(layout(c, depth - 1, snap))).collect()
     } else {
         vec![]
     };
-    Value::Struct(vec![Value::I32(id), item_props(id, mode, showing), Value::Array("v".into(), children)])
+    Value::Struct(vec![Value::I32(id), item_props(id, snap), Value::Array("v".into(), children)])
 }
 
-fn tooltip_text(mode: &Mode, showing: bool, error: &Option<String>) -> String {
+fn tooltip_text(mode: &Mode, showing: bool, keep_aspect: bool, error: &Option<String>) -> String {
     if !showing {
         let base = "Not mirroring. Choose a mode to start again.".to_string();
         return match error {
@@ -141,7 +159,12 @@ fn tooltip_text(mode: &Mode, showing: bool, error: &Option<String>) -> String {
         ),
         Mode::Black => "Second screen blanked".to_string(),
     };
-    let base = format!("{base}\nQ stops the mirror while its window is focused.");
+    let fit = match (mode, keep_aspect) {
+        (Mode::Black, _) => String::new(),
+        (_, true) => "\nAspect ratio kept; unused area is black.".to_string(),
+        (_, false) => "\nStretched to fill the screen.".to_string(),
+    };
+    let base = format!("{base}{fit}\nQ stops the mirror while its window is focused.");
     match error {
         Some(e) => format!("{base}\nCapture error: {e}"),
         None => base,
@@ -149,9 +172,9 @@ fn tooltip_text(mode: &Mode, showing: bool, error: &Option<String>) -> String {
 }
 
 fn sni_props(shared: &Shared) -> Vec<(&'static str, Value)> {
-    let (mode, showing, err) = {
+    let (mode, showing, keep_aspect, err) = {
         let st = shared.state.lock().unwrap();
-        (st.mode, st.showing, st.capture_error.clone())
+        (st.mode, st.showing, st.keep_aspect, st.capture_error.clone())
     };
     let title = if showing {
         format!("ScreenMirror – {}", mode.name())
@@ -178,7 +201,7 @@ fn sni_props(shared: &Shared) -> Vec<(&'static str, Value)> {
                 Value::str(""),
                 Value::Array("(iiay)".into(), vec![]),
                 Value::Str(title),
-                Value::Str(tooltip_text(&mode, showing, &err)),
+                Value::Str(tooltip_text(&mode, showing, keep_aspect, &err)),
             ]),
         ),
         ("ItemIsMenu", Value::Bool(true)),
@@ -301,6 +324,36 @@ impl Tray {
                 st.selecting = false;
                 st.showing = true;
             }),
+            ID_ASPECT => {
+                let on = {
+                    let mut st = shared.state.lock().unwrap();
+                    st.keep_aspect = !st.keep_aspect;
+                    st.keep_aspect
+                };
+                shared.wake();
+                eprintln!("screenmirror: keep aspect ratio: {on}");
+            }
+            ID_NONE => {
+                shared.update(|st| {
+                    st.showing = false;
+                    st.selecting = false;
+                });
+                eprintln!("screenmirror: mirror removed from the menu");
+            }
+            ID_DESKTOP => {
+                let showing = shared.state.lock().unwrap().showing;
+                if showing {
+                    shared.update(|st| st.repin = true);
+                    eprintln!("screenmirror: move mirror onto the current virtual desktop");
+                } else {
+                    shared.update(|st| {
+                        st.mode = Mode::Full;
+                        st.selecting = false;
+                        st.showing = true;
+                    });
+                    eprintln!("screenmirror: start Full on the current virtual desktop");
+                }
+            }
             ID_QUIT => shared.update(|st| st.quit = true),
             _ => return,
         }
@@ -314,10 +367,7 @@ impl Tray {
         let member = m.member.as_deref().unwrap_or("");
         let arg_str = |i: usize| m.body.get(i).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let arg_i = |i: usize| m.body.get(i).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let (mode, showing) = {
-            let st = self.handle.shared.state.lock().unwrap();
-            (st.mode, st.showing)
-        };
+        let snap = menu_snap(&self.handle.shared);
         match (iface, member) {
             ("org.freedesktop.DBus.Properties", "GetAll") => match self.props_for(path, &arg_str(0)) {
                 Some(p) => m.reply(vec![Value::dict_sv(p)]),
@@ -346,7 +396,7 @@ impl Tray {
             (SNI_IFACE, "Activate" | "SecondaryActivate" | "ContextMenu" | "Scroll") => m.reply(vec![]),
             (MENU_IFACE, "GetLayout") => {
                 let rev = self.handle.revision.load(Ordering::SeqCst);
-                m.reply(vec![Value::U32(rev), layout(arg_i(0), arg_i(1), &mode, showing)])
+                m.reply(vec![Value::U32(rev), layout(arg_i(0), arg_i(1), &snap)])
             }
             (MENU_IFACE, "GetGroupProperties") => {
                 let mut ids: Vec<i32> = m
@@ -358,14 +408,14 @@ impl Tray {
                     .filter_map(|v| v.as_i64().map(|x| x as i32))
                     .collect();
                 if ids.is_empty() {
-                    ids = vec![0, ID_FULL, ID_ZOOM, ID_BLACK, ID_SEP, ID_QUIT];
+                    ids = std::iter::once(0).chain(MENU_IDS).collect();
                 }
-                let items = ids.iter().map(|&id| Value::Struct(vec![Value::I32(id), item_props(id, &mode, showing)])).collect();
+                let items = ids.iter().map(|&id| Value::Struct(vec![Value::I32(id), item_props(id, &snap)])).collect();
                 m.reply(vec![Value::Array("(ia{sv})".into(), items)])
             }
             (MENU_IFACE, "GetProperty") => {
                 let name = arg_str(1);
-                match item_props(arg_i(0), &mode, showing).dict_get(&name) {
+                match item_props(arg_i(0), &snap).dict_get(&name) {
                     Some(v) => m.reply(vec![Value::variant(v.clone())]),
                     None => m.error("com.canonical.dbusmenu.Error.UnknownProperty", &name),
                 }
