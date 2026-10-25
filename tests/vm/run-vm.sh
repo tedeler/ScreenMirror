@@ -12,11 +12,17 @@ set -eu
 VM_DIR="${VM_DIR:-$HOME/vm}"
 QMP_SOCK="${QMP_SOCK:-/tmp/sm-qmp.sock}"
 W0="${W0:-1920}" H0="${H0:-1200}"
-# KVM on Cloud Agent VMs hits a host kernel BUG in KVM_CREATE_VCPU; default to TCG.
+# KVM on Cloud Agent VMs hits a host kernel BUG in KVM_CREATE_VCPU
+# (arch/x86/kvm/x86.c kvm_spurious_fault). Always use TCG here.
+# -cpu Nehalem: llvmpipe's AVX2 JIT is unusably slow under TCG and the
+# Plasma desktop stays black. Nehalem has no AVX, so llvmpipe stays on SSE.
+# The guest session must also export QT_QUICK_BACKEND=software and
+# LIBGL_ALWAYS_SOFTWARE=1 (see build-rootfs.sh) or plasmashell paints black and dies.
 ACCEL="${ACCEL:-tcg,thread=multi}"
-CPU="${CPU:-max}"
+CPU="${CPU:-Nehalem}"
+MEM="${MEM:-6G}"
 
-exec qemu-system-x86_64 -accel "$ACCEL" -cpu "$CPU" -smp 4 -m 6G \
+exec qemu-system-x86_64 -accel "$ACCEL" -cpu "$CPU" -smp 4 -m "$MEM" \
     -kernel "$VM_DIR/vmlinuz" -initrd "$VM_DIR/initrd.img" \
     -append "root=/dev/vda rw console=ttyS0 quiet" \
     -drive file="$VM_DIR/kub26.img",format=raw,if=virtio \
