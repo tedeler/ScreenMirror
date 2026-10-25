@@ -33,11 +33,13 @@ screenmirror --screenshot OUTPUT FILE.ppm
 
 ## How it works
 
+The mirror is a fullscreen window on the target output, on the virtual desktop that is current when mirroring starts. Switch to another virtual desktop and that screen is a normal desktop again; switch back and the mirror returns. It is not placed on every desktop. Press **Q** (no modifier, even if another window is focused) to remove the mirror and leave ScreenMirror, including its tray icon, running. Choose Full, Zoom, or Black again to start on the desktop that is current then.
+
 Capture is one `org.kde.KWin.ScreenShot2.CaptureScreen` call per frame. KWin writes raw pixels down a pipe; the reply carries width, height, stride, and the QImage format.
 
-The mirror is a layer-shell overlay on the target output, anchored to every edge so it covers that screen, including any panel. Frames live in `wl_shm` buffers. `wp_viewporter` scales the buffer (or, in Zoom, the chosen rectangle) to the output size. Black mode attaches a 1×1 black buffer and stretches it.
+Frames live in `wl_shm` buffers. `wp_viewporter` scales the buffer (or, in Zoom, the chosen rectangle) to the output size. Black mode attaches a 1×1 black buffer and stretches it. The window is an `xdg_toplevel` sent `set_fullscreen` for the target output. A layer-shell overlay would be shown on every virtual desktop, so the mirror is not one. Q is a KDE global shortcut (`org.kde.KGlobalAccel`, `Qt::Key_Q`).
 
-The tray icon is an `org.kde.StatusNotifierItem`. Its context menu is `com.canonical.dbusmenu`, with radio items for the three modes. Choosing Zoom opens a dimmed overlay on the primary screen; drag with the left button to pick the region, or press Esc or the right button to cancel.
+The tray icon is an `org.kde.StatusNotifierItem`. Its context menu is `com.canonical.dbusmenu`, with radio items for the three modes. Choosing Zoom opens a dimmed overlay on the primary screen; drag with the left button to pick the region, or press Esc or the right button to cancel. While the mirror is stopped, none of the three modes is checked.
 
 ## Test VM
 

@@ -44,6 +44,9 @@ pub struct State {
     pub mode: Mode,
     /// Region selection overlay requested or active.
     pub selecting: bool,
+    /// Mirror window is mapped. Cleared by the Q shortcut; a tray mode sets it again.
+    /// The window is created on the virtual desktop that is current at that moment.
+    pub showing: bool,
     pub quit: bool,
     /// Output name (e.g. "eDP-1") to capture.
     pub source: Option<String>,
@@ -55,7 +58,7 @@ pub struct State {
 
 impl State {
     pub fn needs_frames(&self) -> bool {
-        self.selecting || !matches!(self.mode, Mode::Black)
+        self.showing && (self.selecting || !matches!(self.mode, Mode::Black))
     }
 }
 
@@ -73,6 +76,7 @@ impl Shared {
             state: Mutex::new(State {
                 mode: Mode::Full,
                 selecting: false,
+                showing: true,
                 quit: false,
                 source: None,
                 want_frame: true,
