@@ -1,0 +1,21 @@
+Source: screenmirror
+Section: utils
+Priority: optional
+Maintainer: Torsten Edeler <torsten.edeler@haw-hamburg.de>
+Build-Depends: debhelper-compat (= 13), cargo, rustc
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+Homepage: https://github.com/tedeler/ScreenMirror
+
+Package: screenmirror
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Suggests: plasma-workspace
+Description: mirror one Plasma screen onto the other
+ ScreenMirror captures the screen that holds the KDE panel and shows
+ it on the other output. The tray menu chooses Full, Zoom, or Black,
+ and can stop the mirror without quitting.
+ .
+ The package installs the binary, the desktop entry KWin uses to
+ authorize org.kde.KWin.ScreenShot2, and a Plasma autostart entry that
+ launches the tray with --no-mirror.

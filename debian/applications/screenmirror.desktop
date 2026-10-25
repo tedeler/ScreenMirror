@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ScreenMirror
+Comment=Mirror the laptop screen onto the second screen
+Exec=/usr/bin/screenmirror
+Icon=video-display
+Terminal=false
+Categories=Utility;
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
