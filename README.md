@@ -1,10 +1,10 @@
 # ScreenMirror
 
-Mirror the laptop screen onto a second screen on KDE Plasma (Wayland). The system-tray menu has three modes:
+Mirror the screen that holds the KDE panel onto the other screen, on Plasma (Wayland). The source is whichever output the toolbar is on, not a connector name or a fixed output index. Move the panel to the other screen and the mirror follows. The system-tray menu has three modes:
 
-- **Full** (default). The whole laptop screen is stretched to fill the second screen. Aspect ratio is ignored.
-- **Zoom**. Drag out a region on the laptop screen. That region is then stretched to fill the second screen.
-- **Black**. The second screen is solid black.
+- **Full** (default). The whole primary screen is stretched to fill the secondary screen. Aspect ratio is ignored.
+- **Zoom**. Drag out a region on the primary screen. That region is then stretched to fill the secondary screen.
+- **Black**. The secondary screen is solid black.
 
 Written in Rust using only the standard library.
 
@@ -29,7 +29,7 @@ screenmirror --list-outputs
 screenmirror --screenshot OUTPUT FILE.ppm
 ```
 
-`SCREENMIRROR_SOURCE` and `SCREENMIRROR_TARGET` override output choice. By default the source is the internal panel (eDP, LVDS, or DSI), otherwise the first output, and the target is the other output.
+`SCREENMIRROR_SOURCE` and `SCREENMIRROR_TARGET` override output choice. By default the source is the output whose index is the Plasma toolbar's `lastScreen` in `plasma-org.kde.plasma.desktop-appletsrc` (KWin's output order), and the target is the other output.
 
 ## How it works
 
@@ -37,7 +37,7 @@ Capture is one `org.kde.KWin.ScreenShot2.CaptureScreen` call per frame. KWin wri
 
 The mirror is a layer-shell overlay on the target output, anchored to every edge so it covers that screen, including any panel. Frames live in `wl_shm` buffers. `wp_viewporter` scales the buffer (or, in Zoom, the chosen rectangle) to the output size. Black mode attaches a 1×1 black buffer and stretches it.
 
-The tray icon is an `org.kde.StatusNotifierItem`. Its context menu is `com.canonical.dbusmenu`, with radio items for the three modes. Choosing Zoom opens a dimmed overlay on the laptop screen; drag with the left button to pick the region, or press Esc or the right button to cancel.
+The tray icon is an `org.kde.StatusNotifierItem`. Its context menu is `com.canonical.dbusmenu`, with radio items for the three modes. Choosing Zoom opens a dimmed overlay on the primary screen; drag with the left button to pick the region, or press Esc or the right button to cancel.
 
 ## Test VM
 
