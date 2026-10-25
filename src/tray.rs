@@ -24,23 +24,38 @@ const ID_QUIT: i32 = 5;
 const KGLOBALACCEL: &str = "org.kde.kglobalaccel";
 const KGLOBALACCEL_PATH: &str = "/kglobalaccel";
 const KGLOBALACCEL_IFACE: &str = "org.kde.KGlobalAccel";
-const SHORTCUT_COMPONENT: &str = "screenmirror";
-const SHORTCUT_ACTION: &str = "stop-mirror";
-/// `Qt::Key_Q`, no modifiers.
-const QT_KEY_Q: i32 = 0x51;
-/// `KGlobalAccel` setter flags: `SetPresent` (2) | `NoAutoloading` (4).
-const SHORTCUT_FLAGS: u32 = 2 | 4;
 
-fn shortcut_id() -> Value {
-    Value::Array(
+/// Drops a Q shortcut left behind by an older build. KGlobalAccel keeps that
+/// grab after the process exits, so the letter q stops working system-wide.
+fn release_legacy_global_q(conn: &mut Connection) {
+    let action = Value::Array(
         "s".into(),
-        vec![
-            Value::str(SHORTCUT_COMPONENT),
-            Value::str(SHORTCUT_ACTION),
-            Value::str("ScreenMirror"),
-            Value::str("Stop mirroring"),
-        ],
-    )
+        ["screenmirror", "stop-mirror", "ScreenMirror", "Stop mirroring"]
+            .into_iter()
+            .map(Value::str)
+            .collect(),
+    );
+    let clear = Message::method_call(
+        KGLOBALACCEL,
+        KGLOBALACCEL_PATH,
+        KGLOBALACCEL_IFACE,
+        "setShortcut",
+        vec![action, Value::Array("i".into(), vec![]), Value::U32(2 | 4)],
+    );
+    if let Err(e) = conn.call(&clear) {
+        eprintln!("screenmirror: could not clear a leftover global Q ({e})");
+    }
+    let unregister = Message::method_call(
+        KGLOBALACCEL,
+        KGLOBALACCEL_PATH,
+        KGLOBALACCEL_IFACE,
+        "unregister",
+        vec![Value::str("screenmirror"), Value::str("stop-mirror")],
+    );
+    match conn.call(&unregister) {
+        Ok(_) => eprintln!("screenmirror: global Q shortcut is not registered"),
+        Err(e) => eprintln!("screenmirror: could not unregister global Q ({e})"),
+    }
 }
 
 #[derive(Clone)]
@@ -73,17 +88,6 @@ impl TrayHandle {
         for sig in ["NewIcon", "NewToolTip", "NewTitle"] {
             let _ = self.sender.send(&Message::signal(SNI_PATH, SNI_IFACE, sig, vec![]));
         }
-    }
-
-    /// Drops the global Q grab. The display thread uses this if the compositor closes the window.
-    pub fn shortcut_inactive(&self) {
-        let _ = self.sender.send(&Message::method_call(
-            KGLOBALACCEL,
-            KGLOBALACCEL_PATH,
-            KGLOBALACCEL_IFACE,
-            "setInactive",
-            vec![shortcut_id()],
-        ));
     }
 }
 
@@ -120,7 +124,7 @@ fn layout(id: i32, depth: i32, mode: &Mode, showing: bool) -> Value {
 
 fn tooltip_text(mode: &Mode, showing: bool, error: &Option<String>) -> String {
     if !showing {
-        let base = "Not mirroring. Choose a mode to start again. Q stops the mirror.".to_string();
+        let base = "Not mirroring. Choose a mode to start again.".to_string();
         return match error {
             Some(e) => format!("{base}\nCapture error: {e}"),
             None => base,
@@ -137,6 +141,7 @@ fn tooltip_text(mode: &Mode, showing: bool, error: &Option<String>) -> String {
         ),
         Mode::Black => "Second screen blanked".to_string(),
     };
+    let base = format!("{base}\nQ stops the mirror while its window is focused.");
     match error {
         Some(e) => format!("{base}\nCapture error: {e}"),
         None => base,
@@ -299,74 +304,8 @@ impl Tray {
             ID_QUIT => shared.update(|st| st.quit = true),
             _ => return,
         }
-        if id == ID_QUIT {
-            self.shortcut_inactive_here();
-        } else {
-            self.shortcut_present();
-        }
         eprintln!("screenmirror: menu: item {id} clicked");
         self.handle.mode_changed();
-    }
-
-    /// Registers Q with KGlobalAccel and asks it to grab the key.
-    fn shortcut_present(&mut self) {
-        let msg = Message::method_call(
-            KGLOBALACCEL,
-            KGLOBALACCEL_PATH,
-            KGLOBALACCEL_IFACE,
-            "setShortcut",
-            vec![
-                shortcut_id(),
-                Value::Array("i".into(), vec![Value::I32(QT_KEY_Q)]),
-                Value::U32(SHORTCUT_FLAGS),
-            ],
-        );
-        match self.conn.call(&msg) {
-            Ok(reply) => {
-                let keys = reply
-                    .body
-                    .first()
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|v| v.as_i64()).collect::<Vec<_>>())
-                    .unwrap_or_default();
-                if keys == [QT_KEY_Q as i64] {
-                    eprintln!("screenmirror: global shortcut Q is active");
-                } else {
-                    eprintln!("screenmirror: KGlobalAccel assigned {keys:?} instead of Q");
-                }
-            }
-            Err(e) => eprintln!("screenmirror: cannot bind Q: {e}"),
-        }
-    }
-
-    fn register_shortcut(&mut self) {
-        let reg = Message::method_call(
-            KGLOBALACCEL,
-            KGLOBALACCEL_PATH,
-            KGLOBALACCEL_IFACE,
-            "doRegister",
-            vec![shortcut_id()],
-        );
-        if let Err(e) = self.conn.call(&reg) {
-            eprintln!("screenmirror: cannot register shortcut action: {e}");
-            return;
-        }
-        self.shortcut_present();
-    }
-
-    fn shortcut_inactive_here(&mut self) {
-        let msg = Message::method_call(
-            KGLOBALACCEL,
-            KGLOBALACCEL_PATH,
-            KGLOBALACCEL_IFACE,
-            "setInactive",
-            vec![shortcut_id()],
-        );
-        if let Err(e) = self.conn.call(&msg) {
-            eprintln!("screenmirror: cannot release Q: {e}");
-        } else {
-            eprintln!("screenmirror: global shortcut Q released");
-        }
     }
 
     fn handle_call(&mut self, m: &Message) -> Message {
@@ -464,7 +403,6 @@ impl Tray {
     }
 
     fn run(mut self) {
-        self.register_shortcut();
         loop {
             let m = match self.conn.next() {
                 Ok(m) => m,
@@ -488,18 +426,6 @@ impl Tray {
                         self.register_with_watcher();
                     }
                 }
-                dbus::SIGNAL if m.is("org.kde.kglobalaccel.Component", "globalShortcutPressed") => {
-                    let action = m.body.get(1).and_then(|v| v.as_str()).unwrap_or("");
-                    if action == SHORTCUT_ACTION {
-                        eprintln!("screenmirror: Q pressed, removing the mirror");
-                        self.handle.shared.update(|st| {
-                            st.showing = false;
-                            st.selecting = false;
-                        });
-                        self.shortcut_inactive_here();
-                        self.handle.mode_changed();
-                    }
-                }
                 dbus::ERROR => eprintln!("screenmirror: tray: {}", m.error_text()),
                 _ => {}
             }
@@ -510,14 +436,12 @@ impl Tray {
 /// Connects to the session bus, exports the tray icon and menu, and serves them on a thread.
 pub fn start(shared: Arc<Shared>) -> io::Result<TrayHandle> {
     let mut conn = Connection::session()?;
+    release_legacy_global_q(&mut conn);
     let service = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
     conn.bus_call("RequestName", vec![Value::Str(service.clone()), Value::U32(4)])?;
     conn.bus_call("AddMatch", vec![Value::Str(format!(
         "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='{WATCHER}'"
     ))])?;
-    conn.bus_call("AddMatch", vec![Value::Str(
-        "type='signal',interface='org.kde.kglobalaccel.Component',member='globalShortcutPressed',arg0='screenmirror',arg1='stop-mirror'".to_string(),
-    )])?;
     let handle = TrayHandle { sender: conn.sender.clone(), revision: Arc::new(AtomicU32::new(1)), shared };
     let mut tray = Tray { conn, handle: handle.clone(), service };
     tray.register_with_watcher();

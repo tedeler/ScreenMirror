@@ -17,7 +17,8 @@ const USAGE: &str = "\
 ScreenMirror – mirror the screen that has the Plasma panel onto the other screen
 
 Usage:
-  screenmirror [--fps N] [--no-cursor]   run (tray: Full / Zoom / Black; Q stops)
+  screenmirror [--fps N] [--no-cursor]   run (tray: Full / Zoom / Black; Q stops
+                                         the mirror only while its window is focused)
   screenmirror --install [--autostart]   write the .desktop file KWin needs to
                                          authorize screen capture (and autostart)
   screenmirror --list-outputs            show screens and which ones are used
