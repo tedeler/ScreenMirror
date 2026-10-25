@@ -1,0 +1,20 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: ScreenMirror
+Upstream-Contact: Torsten Edeler <torsten.edeler@haw-hamburg.de>
+Source: https://github.com/tedeler/ScreenMirror
+
+Files: *
+Copyright: 2026 Torsten Edeler
+License: LicenseRef-no-grant
+ The ScreenMirror git repository contains no LICENSE file. The README
+ states no license terms. Cargo.toml sets license = "MIT" as package
+ metadata only. The MIT license text is not in the repository, and
+ this file does not turn that metadata into a license grant.
+ .
+ The upstream files are the author's.
+
+Files: debian/*
+Copyright: 2026 Torsten Edeler
+License: LicenseRef-no-grant
+ The Debian packaging is the author's, on the same terms as the
+ upstream files. This file does not grant a license.

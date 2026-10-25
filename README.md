@@ -34,6 +34,23 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+## Debian package
+
+`debian/` is a source package. With `dpkg-dev`, `debhelper`, `rustc`, and `cargo` installed:
+
+```sh
+dpkg-buildpackage -us -uc
+sudo apt install ../screenmirror_0.1.0_amd64.deb
+```
+
+The build runs `cargo build --locked --release`. The `.deb` name follows `debian/changelog` and the host architecture (`screenmirror_0.1.0_amd64.deb` on amd64). It installs:
+
+- `/usr/bin/screenmirror`, the release binary.
+- `/usr/share/applications/screenmirror.desktop`, the entry KWin matches to allow `org.kde.KWin.ScreenShot2`. `Exec=/usr/bin/screenmirror` is a normal launch.
+- `/etc/xdg/autostart/screenmirror.desktop`, system autostart for Plasma (`OnlyShowIn=KDE`, `Name=ScreenMirror`). `Exec=/usr/bin/screenmirror --no-mirror`, so the tray comes up and no mirror window is mapped until Full, Zoom, or Black is chosen. This file also sets `X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2`, which authorizes the autostarted process.
+
+The package Suggests `plasma-workspace`. `screenmirror --install [--autostart]` still writes a user-level desktop file. The package is the system install path.
+
 `--install` writes `~/.local/share/applications/screenmirror.desktop` with `X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2` and refreshes the KDE service cache. KWin only allows capture from an executable named by that desktop file.
 
 ```text

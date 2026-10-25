@@ -1,0 +1,20 @@
+#!/usr/bin/make -f
+# std-only Rust. There is no debhelper Cargo buildsystem here, so the
+# release binary is built with the locked lockfile and installed by
+# debian/screenmirror.install.
+
+%:
+	dh $@ --buildsystem=none
+
+override_dh_auto_build:
+	cargo build --locked --release
+
+override_dh_auto_test:
+	cargo test --locked
+
+override_dh_auto_clean:
+	cargo clean
+
+override_dh_dwz:
+	# cargo --release emits no DWARF, so dwz has nothing to compress.
+	:

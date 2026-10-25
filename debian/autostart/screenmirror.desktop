@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ScreenMirror
+Comment=Start ScreenMirror in the tray without opening a mirror
+Exec=/usr/bin/screenmirror --no-mirror
+Icon=video-display
+Terminal=false
+Categories=Utility;
+OnlyShowIn=KDE;
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2

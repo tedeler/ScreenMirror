@@ -1,0 +1,8 @@
+# Keep dpkg-source's default exclude list, and drop build output.
+--tar-ignore
+--tar-ignore=target
+--tar-ignore=debian/.debhelper
+--tar-ignore=debian/screenmirror
+--tar-ignore=debian/debhelper-build-stamp
+--tar-ignore=debian/*.substvars
+--tar-ignore=debian/*.debhelper.log

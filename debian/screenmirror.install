@@ -1,0 +1,3 @@
+target/release/screenmirror usr/bin
+debian/applications/screenmirror.desktop usr/share/applications
+debian/autostart/screenmirror.desktop etc/xdg/autostart
