@@ -10,7 +10,8 @@
 //! * The zoom region selector is a layer surface on the source output that
 //!   shows a dimmed freeze-frame; drag with the left button to select,
 //!   Esc / right click cancels.
-//! * Q (KGlobalAccel, no modifier) unmaps the mirror and leaves the process up.
+//! * Q unmaps the mirror when that window has keyboard focus, and leaves the process up.
+//!   It is not a global shortcut, so Q still types everywhere else.
 
 use std::collections::HashMap;
 use std::io::{self, Read};
@@ -28,6 +29,8 @@ const ANCHOR_ALL: u32 = 1 | 2 | 4 | 8;
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const KEY_ESC: u32 = 1;
+/// Linux evdev code for the letter q. Only handled while the mirror window is focused.
+const KEY_Q: u32 = 16;
 const CURSOR_CROSSHAIR: u32 = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -134,6 +137,8 @@ pub struct App {
     outputs_dirty: bool,
     pointer: u32,
     keyboard: u32,
+    /// `wl_surface` that currently has keyboard focus, if it is one of ours.
+    keyboard_focus: Option<u32>,
     cursor_device: u32,
     slots: Vec<Slot>,
     black: Option<Slot>,
@@ -262,6 +267,7 @@ impl App {
             outputs_dirty: false,
             pointer: 0,
             keyboard: 0,
+            keyboard_focus: None,
             cursor_device: 0,
             slots: Vec::new(),
             black: None,
@@ -466,10 +472,27 @@ impl App {
             (Obj::Keyboard, 0) => {
                 drop(self.conn.take_fd());
             }
+            (Obj::Keyboard, 1) => {
+                let _serial = a.u32();
+                self.keyboard_focus = Some(a.u32());
+            }
+            (Obj::Keyboard, 2) => {
+                let _serial = a.u32();
+                let surface = a.u32();
+                if self.keyboard_focus == Some(surface) {
+                    self.keyboard_focus = None;
+                }
+            }
             (Obj::Keyboard, 3) => {
                 let (_serial, _time, key, state) = (a.u32(), a.u32(), a.u32(), a.u32());
-                if key == KEY_ESC && state == 1 && self.selection.is_some() {
+                if state != 1 {
+                    return Ok(());
+                }
+                if key == KEY_ESC && self.selection.is_some() {
                     self.finish_selection(false)?;
+                } else if key == KEY_Q && self.mirror.as_ref().is_some_and(|m| self.keyboard_focus == Some(m.surface)) {
+                    eprintln!("screenmirror: Q on the focused mirror window");
+                    self.stop_mirror()?;
                 }
             }
             (Obj::Buffer, 0) => {
@@ -749,7 +772,6 @@ impl App {
             st.selecting = false;
         });
         if let Some(t) = &self.tray {
-            t.shortcut_inactive();
             t.mode_changed();
         }
         eprintln!("screenmirror: mirror removed; tray still running");

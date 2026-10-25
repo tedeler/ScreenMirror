@@ -44,7 +44,7 @@ pub struct State {
     pub mode: Mode,
     /// Region selection overlay requested or active.
     pub selecting: bool,
-    /// Mirror window is mapped. Cleared by the Q shortcut; a tray mode sets it again.
+    /// Mirror window is mapped. Cleared by Q while that window is focused; a tray mode sets it again.
     /// The window is created on the virtual desktop that is current at that moment.
     pub showing: bool,
     pub quit: bool,
