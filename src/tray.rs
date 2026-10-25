@@ -21,6 +21,28 @@ const ID_BLACK: i32 = 3;
 const ID_SEP: i32 = 4;
 const ID_QUIT: i32 = 5;
 
+const KGLOBALACCEL: &str = "org.kde.kglobalaccel";
+const KGLOBALACCEL_PATH: &str = "/kglobalaccel";
+const KGLOBALACCEL_IFACE: &str = "org.kde.KGlobalAccel";
+const SHORTCUT_COMPONENT: &str = "screenmirror";
+const SHORTCUT_ACTION: &str = "stop-mirror";
+/// `Qt::Key_Q`, no modifiers.
+const QT_KEY_Q: i32 = 0x51;
+/// `KGlobalAccel` setter flags: `SetPresent` (2) | `NoAutoloading` (4).
+const SHORTCUT_FLAGS: u32 = 2 | 4;
+
+fn shortcut_id() -> Value {
+    Value::Array(
+        "s".into(),
+        vec![
+            Value::str(SHORTCUT_COMPONENT),
+            Value::str(SHORTCUT_ACTION),
+            Value::str("ScreenMirror"),
+            Value::str("Stop mirroring"),
+        ],
+    )
+}
+
 #[derive(Clone)]
 pub struct TrayHandle {
     sender: Sender,
@@ -32,14 +54,17 @@ impl TrayHandle {
     /// Tells the tray host that the menu checkmarks, icon and tooltip changed.
     pub fn mode_changed(&self) {
         let rev = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
-        let mode = self.shared.state.lock().unwrap().mode;
+        let (mode, showing) = {
+            let st = self.shared.state.lock().unwrap();
+            (st.mode, st.showing)
+        };
         let _ = self.sender.send(&Message::signal(MENU_PATH, MENU_IFACE, "LayoutUpdated", vec![
             Value::U32(rev),
             Value::I32(0),
         ]));
         let updated: Vec<Value> = [ID_FULL, ID_ZOOM, ID_BLACK]
             .iter()
-            .map(|&id| Value::Struct(vec![Value::I32(id), item_props(id, &mode)]))
+            .map(|&id| Value::Struct(vec![Value::I32(id), item_props(id, &mode, showing)]))
             .collect();
         let _ = self.sender.send(&Message::signal(MENU_PATH, MENU_IFACE, "ItemsPropertiesUpdated", vec![
             Value::Array("(ia{sv})".into(), updated),
@@ -49,9 +74,20 @@ impl TrayHandle {
             let _ = self.sender.send(&Message::signal(SNI_PATH, SNI_IFACE, sig, vec![]));
         }
     }
+
+    /// Drops the global Q grab. The display thread uses this if the compositor closes the window.
+    pub fn shortcut_inactive(&self) {
+        let _ = self.sender.send(&Message::method_call(
+            KGLOBALACCEL,
+            KGLOBALACCEL_PATH,
+            KGLOBALACCEL_IFACE,
+            "setInactive",
+            vec![shortcut_id()],
+        ));
+    }
 }
 
-fn item_props(id: i32, mode: &Mode) -> Value {
+fn item_props(id: i32, mode: &Mode, showing: bool) -> Value {
     let radio = |label: &str, on: bool| {
         Value::dict_sv(vec![
             ("label", Value::str(label)),
@@ -61,28 +97,35 @@ fn item_props(id: i32, mode: &Mode) -> Value {
     };
     match id {
         0 => Value::dict_sv(vec![("children-display", Value::str("submenu"))]),
-        ID_FULL => radio("Full screen", matches!(mode, Mode::Full)),
-        ID_ZOOM => radio("Zoom – select region…", matches!(mode, Mode::Zoom(_))),
-        ID_BLACK => radio("Black", matches!(mode, Mode::Black)),
+        ID_FULL => radio("Full screen", showing && matches!(mode, Mode::Full)),
+        ID_ZOOM => radio("Zoom – select region…", showing && matches!(mode, Mode::Zoom(_))),
+        ID_BLACK => radio("Black", showing && matches!(mode, Mode::Black)),
         ID_SEP => Value::dict_sv(vec![("type", Value::str("separator"))]),
         ID_QUIT => Value::dict_sv(vec![("label", Value::str("Quit")), ("icon-name", Value::str("application-exit"))]),
         _ => Value::dict_sv(vec![]),
     }
 }
 
-fn layout(id: i32, depth: i32, mode: &Mode) -> Value {
+fn layout(id: i32, depth: i32, mode: &Mode, showing: bool) -> Value {
     let children = if id == 0 && depth != 0 {
         [ID_FULL, ID_ZOOM, ID_BLACK, ID_SEP, ID_QUIT]
             .iter()
-            .map(|&c| Value::variant(layout(c, depth - 1, mode)))
+            .map(|&c| Value::variant(layout(c, depth - 1, mode, showing)))
             .collect()
     } else {
         vec![]
     };
-    Value::Struct(vec![Value::I32(id), item_props(id, mode), Value::Array("v".into(), children)])
+    Value::Struct(vec![Value::I32(id), item_props(id, mode, showing), Value::Array("v".into(), children)])
 }
 
-fn tooltip_text(mode: &Mode, error: &Option<String>) -> String {
+fn tooltip_text(mode: &Mode, showing: bool, error: &Option<String>) -> String {
+    if !showing {
+        let base = "Not mirroring. Choose a mode to start again. Q stops the mirror.".to_string();
+        return match error {
+            Some(e) => format!("{base}\nCapture error: {e}"),
+            None => base,
+        };
+    }
     let base = match mode {
         Mode::Full => "Mirroring the whole screen".to_string(),
         Mode::Zoom(r) => format!(
@@ -101,11 +144,15 @@ fn tooltip_text(mode: &Mode, error: &Option<String>) -> String {
 }
 
 fn sni_props(shared: &Shared) -> Vec<(&'static str, Value)> {
-    let (mode, err) = {
+    let (mode, showing, err) = {
         let st = shared.state.lock().unwrap();
-        (st.mode, st.capture_error.clone())
+        (st.mode, st.showing, st.capture_error.clone())
     };
-    let title = format!("ScreenMirror – {}", mode.name());
+    let title = if showing {
+        format!("ScreenMirror – {}", mode.name())
+    } else {
+        "ScreenMirror".to_string()
+    };
     vec![
         ("Category", Value::str("Hardware")),
         ("Id", Value::str("screenmirror")),
@@ -113,7 +160,7 @@ fn sni_props(shared: &Shared) -> Vec<(&'static str, Value)> {
         ("Status", Value::str("Active")),
         ("WindowId", Value::I32(0)),
         ("IconName", Value::str("")),
-        ("IconPixmap", icon::pixmaps(&mode)),
+        ("IconPixmap", icon::pixmaps(&mode, showing)),
         ("IconThemePath", Value::str("")),
         ("OverlayIconName", Value::str("")),
         ("OverlayIconPixmap", Value::Array("(iiay)".into(), vec![])),
@@ -126,7 +173,7 @@ fn sni_props(shared: &Shared) -> Vec<(&'static str, Value)> {
                 Value::str(""),
                 Value::Array("(iiay)".into(), vec![]),
                 Value::Str(title),
-                Value::Str(tooltip_text(&mode, &err)),
+                Value::Str(tooltip_text(&mode, showing, &err)),
             ]),
         ),
         ("ItemIsMenu", Value::Bool(true)),
@@ -238,17 +285,88 @@ impl Tray {
             ID_FULL => shared.update(|st| {
                 st.mode = Mode::Full;
                 st.selecting = false;
+                st.showing = true;
             }),
-            ID_ZOOM => shared.update(|st| st.selecting = true),
+            ID_ZOOM => shared.update(|st| {
+                st.selecting = true;
+                st.showing = true;
+            }),
             ID_BLACK => shared.update(|st| {
                 st.mode = Mode::Black;
                 st.selecting = false;
+                st.showing = true;
             }),
             ID_QUIT => shared.update(|st| st.quit = true),
             _ => return,
         }
+        if id == ID_QUIT {
+            self.shortcut_inactive_here();
+        } else {
+            self.shortcut_present();
+        }
         eprintln!("screenmirror: menu: item {id} clicked");
         self.handle.mode_changed();
+    }
+
+    /// Registers Q with KGlobalAccel and asks it to grab the key.
+    fn shortcut_present(&mut self) {
+        let msg = Message::method_call(
+            KGLOBALACCEL,
+            KGLOBALACCEL_PATH,
+            KGLOBALACCEL_IFACE,
+            "setShortcut",
+            vec![
+                shortcut_id(),
+                Value::Array("i".into(), vec![Value::I32(QT_KEY_Q)]),
+                Value::U32(SHORTCUT_FLAGS),
+            ],
+        );
+        match self.conn.call(&msg) {
+            Ok(reply) => {
+                let keys = reply
+                    .body
+                    .first()
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_i64()).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                if keys == [QT_KEY_Q as i64] {
+                    eprintln!("screenmirror: global shortcut Q is active");
+                } else {
+                    eprintln!("screenmirror: KGlobalAccel assigned {keys:?} instead of Q");
+                }
+            }
+            Err(e) => eprintln!("screenmirror: cannot bind Q: {e}"),
+        }
+    }
+
+    fn register_shortcut(&mut self) {
+        let reg = Message::method_call(
+            KGLOBALACCEL,
+            KGLOBALACCEL_PATH,
+            KGLOBALACCEL_IFACE,
+            "doRegister",
+            vec![shortcut_id()],
+        );
+        if let Err(e) = self.conn.call(&reg) {
+            eprintln!("screenmirror: cannot register shortcut action: {e}");
+            return;
+        }
+        self.shortcut_present();
+    }
+
+    fn shortcut_inactive_here(&mut self) {
+        let msg = Message::method_call(
+            KGLOBALACCEL,
+            KGLOBALACCEL_PATH,
+            KGLOBALACCEL_IFACE,
+            "setInactive",
+            vec![shortcut_id()],
+        );
+        if let Err(e) = self.conn.call(&msg) {
+            eprintln!("screenmirror: cannot release Q: {e}");
+        } else {
+            eprintln!("screenmirror: global shortcut Q released");
+        }
     }
 
     fn handle_call(&mut self, m: &Message) -> Message {
@@ -257,7 +375,10 @@ impl Tray {
         let member = m.member.as_deref().unwrap_or("");
         let arg_str = |i: usize| m.body.get(i).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let arg_i = |i: usize| m.body.get(i).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let mode = self.handle.shared.state.lock().unwrap().mode;
+        let (mode, showing) = {
+            let st = self.handle.shared.state.lock().unwrap();
+            (st.mode, st.showing)
+        };
         match (iface, member) {
             ("org.freedesktop.DBus.Properties", "GetAll") => match self.props_for(path, &arg_str(0)) {
                 Some(p) => m.reply(vec![Value::dict_sv(p)]),
@@ -286,7 +407,7 @@ impl Tray {
             (SNI_IFACE, "Activate" | "SecondaryActivate" | "ContextMenu" | "Scroll") => m.reply(vec![]),
             (MENU_IFACE, "GetLayout") => {
                 let rev = self.handle.revision.load(Ordering::SeqCst);
-                m.reply(vec![Value::U32(rev), layout(arg_i(0), arg_i(1), &mode)])
+                m.reply(vec![Value::U32(rev), layout(arg_i(0), arg_i(1), &mode, showing)])
             }
             (MENU_IFACE, "GetGroupProperties") => {
                 let mut ids: Vec<i32> = m
@@ -300,12 +421,12 @@ impl Tray {
                 if ids.is_empty() {
                     ids = vec![0, ID_FULL, ID_ZOOM, ID_BLACK, ID_SEP, ID_QUIT];
                 }
-                let items = ids.iter().map(|&id| Value::Struct(vec![Value::I32(id), item_props(id, &mode)])).collect();
+                let items = ids.iter().map(|&id| Value::Struct(vec![Value::I32(id), item_props(id, &mode, showing)])).collect();
                 m.reply(vec![Value::Array("(ia{sv})".into(), items)])
             }
             (MENU_IFACE, "GetProperty") => {
                 let name = arg_str(1);
-                match item_props(arg_i(0), &mode).dict_get(&name) {
+                match item_props(arg_i(0), &mode, showing).dict_get(&name) {
                     Some(v) => m.reply(vec![Value::variant(v.clone())]),
                     None => m.error("com.canonical.dbusmenu.Error.UnknownProperty", &name),
                 }
@@ -343,6 +464,7 @@ impl Tray {
     }
 
     fn run(mut self) {
+        self.register_shortcut();
         loop {
             let m = match self.conn.next() {
                 Ok(m) => m,
@@ -366,6 +488,18 @@ impl Tray {
                         self.register_with_watcher();
                     }
                 }
+                dbus::SIGNAL if m.is("org.kde.kglobalaccel.Component", "globalShortcutPressed") => {
+                    let action = m.body.get(1).and_then(|v| v.as_str()).unwrap_or("");
+                    if action == SHORTCUT_ACTION {
+                        eprintln!("screenmirror: Q pressed, removing the mirror");
+                        self.handle.shared.update(|st| {
+                            st.showing = false;
+                            st.selecting = false;
+                        });
+                        self.shortcut_inactive_here();
+                        self.handle.mode_changed();
+                    }
+                }
                 dbus::ERROR => eprintln!("screenmirror: tray: {}", m.error_text()),
                 _ => {}
             }
@@ -381,6 +515,9 @@ pub fn start(shared: Arc<Shared>) -> io::Result<TrayHandle> {
     conn.bus_call("AddMatch", vec![Value::Str(format!(
         "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='{WATCHER}'"
     ))])?;
+    conn.bus_call("AddMatch", vec![Value::Str(
+        "type='signal',interface='org.kde.kglobalaccel.Component',member='globalShortcutPressed',arg0='screenmirror',arg1='stop-mirror'".to_string(),
+    )])?;
     let handle = TrayHandle { sender: conn.sender.clone(), revision: Arc::new(AtomicU32::new(1)), shared };
     let mut tray = Tray { conn, handle: handle.clone(), service };
     tray.register_with_watcher();

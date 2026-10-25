@@ -1,13 +1,16 @@
 //! Native Wayland display side.
 //!
-//! * The mirror is a wlr-layer-shell surface on the second output (overlay layer,
-//!   anchored to all edges, ignoring panels' exclusive zones). Captured frames go
-//!   into wl_shm buffers and `wp_viewporter` stretches them to the output size
-//!   (aspect ratio deliberately ignored); in Zoom mode the viewport source
-//!   rectangle crops the selected region, so scaling happens in the compositor.
-//! * The zoom region selector is a second layer surface on the source output that
+//! * The mirror is an `xdg_toplevel` fullscreen on the secondary output, so KWin
+//!   puts it on the virtual desktop that is current when the window is created
+//!   and hides it on every other desktop. Captured frames go into `wl_shm`
+//!   buffers and `wp_viewporter` stretches them to the output size (aspect ratio
+//!   deliberately ignored); in Zoom mode the viewport source rectangle crops the
+//!   selected region, so scaling happens in the compositor. A layer-shell surface
+//!   would be forced onto every desktop, which is why the mirror is not one.
+//! * The zoom region selector is a layer surface on the source output that
 //!   shows a dimmed freeze-frame; drag with the left button to select,
 //!   Esc / right click cancels.
+//! * Q (KGlobalAccel, no modifier) unmaps the mirror and leaves the process up.
 
 use std::collections::HashMap;
 use std::io::{self, Read};
@@ -38,6 +41,9 @@ enum Obj {
     Keyboard,
     Buffer,
     LayerSurface(u32),
+    XdgWmBase,
+    XdgSurface(u32),
+    XdgToplevel(u32),
     OutputOrder,
 }
 
@@ -60,6 +66,20 @@ struct Slot {
     height: u32,
     stride: u32,
     busy: bool,
+}
+
+#[derive(Clone, Copy)]
+struct XdgWin {
+    surface: u32,
+    viewport: u32,
+    xdg: u32,
+    toplevel: u32,
+    configured: bool,
+    width: i32,
+    height: i32,
+    pending_w: i32,
+    pending_h: i32,
+    frame_pending: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -95,6 +115,7 @@ struct Globals {
     shm: u32,
     viewporter: u32,
     layer_shell: u32,
+    wm_base: u32,
     cursor_shape: u32,
     seat: u32,
     output_order: u32,
@@ -116,7 +137,7 @@ pub struct App {
     cursor_device: u32,
     slots: Vec<Slot>,
     black: Option<Slot>,
-    mirror: Option<LayerSurf>,
+    mirror: Option<XdgWin>,
     drawn: Drawn,
     selection: Option<Selection>,
     selection_wait_seq: Option<u64>,
@@ -265,6 +286,7 @@ impl App {
             ("wl_shm", app.g.shm),
             ("wp_viewporter", app.g.viewporter),
             ("zwlr_layer_shell_v1", app.g.layer_shell),
+            ("xdg_wm_base", app.g.wm_base),
         ] {
             if id == 0 {
                 return Err(io::Error::new(io::ErrorKind::Unsupported, format!("compositor lacks {what}")));
@@ -280,6 +302,7 @@ impl App {
                 "wl_shm" => 1,
                 "wp_viewporter" => 1,
                 "zwlr_layer_shell_v1" => 3,
+                "xdg_wm_base" => 6,
                 "wp_cursor_shape_manager_v1" => 1,
                 "wl_seat" => 5,
                 "wl_output" => 4,
@@ -291,6 +314,7 @@ impl App {
                 "wl_shm" => Some(&mut self.g.shm),
                 "wp_viewporter" => Some(&mut self.g.viewporter),
                 "zwlr_layer_shell_v1" => Some(&mut self.g.layer_shell),
+                "xdg_wm_base" => Some(&mut self.g.wm_base),
                 "wp_cursor_shape_manager_v1" => Some(&mut self.g.cursor_shape),
                 "wl_seat" => Some(&mut self.g.seat),
                 "kde_output_order_v1" => Some(&mut self.g.output_order),
@@ -315,6 +339,9 @@ impl App {
                 }
                 "kde_output_order_v1" => {
                     self.objects.insert(id, Obj::OutputOrder);
+                }
+                "xdg_wm_base" => {
+                    self.objects.insert(id, Obj::XdgWmBase);
                 }
                 _ => {}
             }
@@ -455,14 +482,7 @@ impl App {
             (Obj::LayerSurface(surface), 0) => {
                 let (serial, w, h) = (a.u32(), a.u32() as i32, a.u32() as i32);
                 self.conn.send(Req::new(ev.obj, 6).u32(serial))?;
-                if let Some(m) = self.mirror.as_mut().filter(|m| m.surface == surface) {
-                    m.configured = true;
-                    if (w, h) != (m.width, m.height) {
-                        self.drawn = Drawn::Nothing;
-                    }
-                    (m.width, m.height) = (w.max(1), h.max(1));
-                    self.draw_mirror()?;
-                } else if let Some(s) = self.selection.as_mut().filter(|s| s.surf.surface == surface) {
+                if let Some(s) = self.selection.as_mut().filter(|s| s.surf.surface == surface) {
                     s.surf.configured = true;
                     (s.surf.width, s.surf.height) = (w.max(1), h.max(1));
                     s.dirty = true;
@@ -470,14 +490,54 @@ impl App {
                 }
             }
             (Obj::LayerSurface(surface), 1) => {
-                if self.mirror.as_ref().is_some_and(|m| m.surface == surface) {
-                    let m = self.mirror.take().unwrap();
-                    self.destroy_layer(m)?;
-                    self.target = None;
-                    self.outputs_dirty = true;
-                } else if self.selection.as_ref().is_some_and(|s| s.surf.surface == surface) {
+                if self.selection.as_ref().is_some_and(|s| s.surf.surface == surface) {
                     self.finish_selection(false)?;
                 }
+            }
+            (Obj::XdgWmBase, 0) => {
+                let serial = a.u32();
+                self.conn.send(Req::new(ev.obj, 3).u32(serial))?;
+            }
+            (Obj::XdgToplevel(surface), 0) => {
+                let (w, h) = (a.i32(), a.i32());
+                let _states = a.array();
+                if let Some(m) = self.mirror.as_mut().filter(|m| m.surface == surface) {
+                    if w > 0 {
+                        m.pending_w = w;
+                    }
+                    if h > 0 {
+                        m.pending_h = h;
+                    }
+                }
+            }
+            (Obj::XdgToplevel(surface), 1) => {
+                if self.mirror.as_ref().is_some_and(|m| m.surface == surface) {
+                    eprintln!("screenmirror: compositor closed the mirror window");
+                    self.stop_mirror()?;
+                }
+            }
+            (Obj::XdgSurface(surface), 0) => {
+                let serial = a.u32();
+                if self.mirror.as_ref().is_none_or(|m| m.surface != surface) {
+                    self.conn.send(Req::new(ev.obj, 4).u32(serial))?;
+                    return Ok(());
+                }
+                let fallback = self.output_logical(self.target.as_deref().unwrap_or(""));
+                let (xdg, width, height) = {
+                    let m = self.mirror.as_mut().unwrap();
+                    let w = if m.pending_w > 0 { m.pending_w } else { fallback.0 };
+                    let h = if m.pending_h > 0 { m.pending_h } else { fallback.1 };
+                    if (w, h) != (m.width, m.height) || !m.configured {
+                        self.drawn = Drawn::Nothing;
+                    }
+                    m.configured = true;
+                    (m.width, m.height) = (w.max(1), h.max(1));
+                    m.frame_pending = false;
+                    (m.xdg, m.width, m.height)
+                };
+                self.conn.send(Req::new(xdg, 3).i32(0).i32(0).i32(width).i32(height))?;
+                self.conn.send(Req::new(xdg, 4).u32(serial))?;
+                self.draw_mirror()?;
             }
             _ => {}
         }
@@ -594,21 +654,105 @@ impl App {
             });
             self.drawn = Drawn::Nothing;
         }
-        if target != self.target || (target.is_some() && self.mirror.is_none()) {
-            if let Some(m) = self.mirror.take() {
-                self.destroy_layer(m)?;
+        let showing = self.shared.state.lock().unwrap().showing;
+        if !showing {
+            self.destroy_mirror_window()?;
+            if target != self.target {
+                eprintln!(
+                    "screenmirror: mirror target while stopped: {}",
+                    target.as_deref().unwrap_or("(none)")
+                );
+                self.target = target;
             }
+        } else if target != self.target || (target.is_some() && self.mirror.is_none()) {
+            self.destroy_mirror_window()?;
             match &target {
                 Some(t) => {
-                    eprintln!("screenmirror: mirroring onto: {t}");
+                    eprintln!("screenmirror: mirroring onto {t} (current virtual desktop only)");
                     let t = t.clone();
-                    self.mirror = Some(self.create_layer(&t, "screenmirror", false)?);
+                    self.mirror = Some(self.create_xdg(&t)?);
                 }
                 None => eprintln!("screenmirror: no second screen connected; waiting"),
             }
             self.target = target;
             self.drawn = Drawn::Nothing;
         }
+        Ok(())
+    }
+
+    fn output_logical(&self, name: &str) -> (i32, i32) {
+        let Some(o) = self.outputs.iter().find(|o| o.name == name) else {
+            return (1, 1);
+        };
+        let scale = o.scale.max(1);
+        ((o.width / scale).max(1), (o.height / scale).max(1))
+    }
+
+    /// Fullscreen toplevel on `output`. KWin associates a new window with the
+    /// virtual desktop that is current when it is created, and not with the others.
+    fn create_xdg(&mut self, output: &str) -> io::Result<XdgWin> {
+        let output_id = self.output_id(output).unwrap_or(0);
+        let surface = self.conn.new_id();
+        self.conn.send(Req::new(self.g.compositor, 0).u32(surface))?;
+        let viewport = self.conn.new_id();
+        self.conn.send(Req::new(self.g.viewporter, 1).u32(viewport).u32(surface))?;
+        let xdg = self.conn.new_id();
+        self.objects.insert(xdg, Obj::XdgSurface(surface));
+        self.conn.send(Req::new(self.g.wm_base, 2).u32(xdg).u32(surface))?;
+        let toplevel = self.conn.new_id();
+        self.objects.insert(toplevel, Obj::XdgToplevel(surface));
+        self.conn.send(Req::new(xdg, 1).u32(toplevel))?;
+        self.conn.send(Req::new(toplevel, 2).string("ScreenMirror"))?;
+        self.conn.send(Req::new(toplevel, 3).string("screenmirror"))?;
+        self.conn.send(Req::new(toplevel, 11).u32(output_id))?;
+        self.conn.send(Req::new(surface, 6))?;
+        Ok(XdgWin {
+            surface,
+            viewport,
+            xdg,
+            toplevel,
+            configured: false,
+            width: 0,
+            height: 0,
+            pending_w: 0,
+            pending_h: 0,
+            frame_pending: false,
+        })
+    }
+
+    fn destroy_xdg(&mut self, w: XdgWin) -> io::Result<()> {
+        self.objects.remove(&w.toplevel);
+        self.objects.remove(&w.xdg);
+        self.conn.send(Req::new(w.toplevel, 0))?;
+        self.conn.send(Req::new(w.xdg, 0))?;
+        self.conn.send(Req::new(w.viewport, 0))?;
+        self.conn.send(Req::new(w.surface, 0))
+    }
+
+    fn destroy_mirror_window(&mut self) -> io::Result<()> {
+        if let Some(w) = self.mirror.take() {
+            self.destroy_xdg(w)?;
+            self.drawn = Drawn::Nothing;
+        }
+        Ok(())
+    }
+
+    /// Removes the mirror window and the zoom selector. The process and tray stay up.
+    fn stop_mirror(&mut self) -> io::Result<()> {
+        self.destroy_mirror_window()?;
+        if let Some(sel) = self.selection.take() {
+            self.destroy_layer(sel.surf)?;
+            self.selection_wait_seq = None;
+        }
+        self.shared.update(|st| {
+            st.showing = false;
+            st.selecting = false;
+        });
+        if let Some(t) = &self.tray {
+            t.shortcut_inactive();
+            t.mode_changed();
+        }
+        eprintln!("screenmirror: mirror removed; tray still running");
         Ok(())
     }
 
@@ -692,23 +836,35 @@ impl App {
         Ok(self.slots.len() - 1)
     }
 
-    fn present(&mut self, surf: &LayerSurf, buffer: u32, src: Option<(f64, f64, f64, f64)>, callback: bool) -> io::Result<()> {
+    fn present(
+        &mut self,
+        surface: u32,
+        viewport: u32,
+        width: i32,
+        height: i32,
+        buffer: u32,
+        src: Option<(f64, f64, f64, f64)>,
+        callback: bool,
+    ) -> io::Result<()> {
         let (x, y, w, h) = src.unwrap_or((-1.0, -1.0, -1.0, -1.0));
-        self.conn.send(Req::new(surf.viewport, 1).fixed(x).fixed(y).fixed(w).fixed(h))?;
-        self.conn.send(Req::new(surf.viewport, 2).i32(surf.width).i32(surf.height))?;
+        self.conn.send(Req::new(viewport, 1).fixed(x).fixed(y).fixed(w).fixed(h))?;
+        self.conn.send(Req::new(viewport, 2).i32(width).i32(height))?;
         if callback {
             let cb = self.conn.new_id();
-            self.objects.insert(cb, Obj::FrameCallback(surf.surface));
-            self.conn.send(Req::new(surf.surface, 3).u32(cb))?;
+            self.objects.insert(cb, Obj::FrameCallback(surface));
+            self.conn.send(Req::new(surface, 3).u32(cb))?;
         }
-        self.conn.send(Req::new(surf.surface, 1).u32(buffer).i32(0).i32(0))?;
-        self.conn.send(Req::new(surf.surface, 9).i32(0).i32(0).i32(i32::MAX).i32(i32::MAX))?;
-        self.conn.send(Req::new(surf.surface, 6))
+        self.conn.send(Req::new(surface, 1).u32(buffer).i32(0).i32(0))?;
+        self.conn.send(Req::new(surface, 9).i32(0).i32(0).i32(i32::MAX).i32(i32::MAX))?;
+        self.conn.send(Req::new(surface, 6))
     }
 
     fn draw_mirror(&mut self) -> io::Result<()> {
-        let Some(m) = self.mirror.as_ref() else { return Ok(()) };
-        if !m.configured || m.frame_pending {
+        let (configured, frame_pending, surface, viewport, width, height) = {
+            let Some(m) = self.mirror.as_ref() else { return Ok(()) };
+            (m.configured, m.frame_pending, m.surface, m.viewport, m.width, m.height)
+        };
+        if !configured || frame_pending {
             return Ok(());
         }
         let (mode, frame) = {
@@ -723,7 +879,7 @@ impl App {
         if want == self.drawn {
             return Ok(());
         }
-        let surf = *m;
+        let surf = (surface, viewport, width, height);
         match frame {
             None => {
                 if self.black.is_none() {
@@ -732,7 +888,7 @@ impl App {
                     self.black = Some(s);
                 }
                 let buffer = self.black.as_ref().unwrap().buffer;
-                self.present(&surf, buffer, None, false)?;
+                self.present(surf.0, surf.1, surf.2, surf.3, buffer, None, false)?;
             }
             Some(f) => {
                 let i = self.slot_for(f.width, f.height, f.stride)?;
@@ -745,7 +901,7 @@ impl App {
                     Mode::Zoom(r) => Some(region_px(&r, f.width, f.height)),
                     _ => None,
                 };
-                self.present(&surf, buffer, src, true)?;
+                self.present(surf.0, surf.1, surf.2, surf.3, buffer, src, true)?;
                 self.mirror.as_mut().unwrap().frame_pending = true;
                 self.shared.update(|st| st.want_frame = true);
             }
@@ -812,7 +968,7 @@ impl App {
         let buffer = slot.buffer;
         sel.dirty = false;
         let surf = sel.surf;
-        self.present(&surf, buffer, None, true)?;
+        self.present(surf.surface, surf.viewport, surf.width, surf.height, buffer, None, true)?;
         self.selection.as_mut().unwrap().surf.frame_pending = true;
         Ok(())
     }
@@ -848,12 +1004,31 @@ impl App {
 
     /// Reacts to changes made by the tray / capture threads.
     fn sync_state(&mut self) -> io::Result<bool> {
-        let (quit, selecting, frame) = {
+        let (quit, selecting, showing, frame) = {
             let st = self.shared.state.lock().unwrap();
-            (st.quit, st.selecting, st.frame.clone())
+            (st.quit, st.selecting, st.showing, st.frame.clone())
         };
         if quit {
             return Ok(false);
+        }
+        if !showing {
+            let had = self.mirror.is_some() || self.selection.is_some();
+            self.destroy_mirror_window()?;
+            if let Some(sel) = self.selection.take() {
+                self.destroy_layer(sel.surf)?;
+                self.selection_wait_seq = None;
+            }
+            if had {
+                eprintln!("screenmirror: mirror view removed");
+            }
+            return Ok(true);
+        }
+        if self.mirror.is_none() {
+            if let Some(t) = self.target.clone() {
+                eprintln!("screenmirror: mirroring onto {t} (current virtual desktop only)");
+                self.mirror = Some(self.create_xdg(&t)?);
+                self.drawn = Drawn::Nothing;
+            }
         }
         if selecting && self.selection.is_none() {
             match self.selection_wait_seq {
