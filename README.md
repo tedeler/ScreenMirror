@@ -14,7 +14,7 @@ Written in Rust using only the standard library.
 
 ## Requirements
 
-Kubuntu 26.04 (Plasma 6 on Wayland) with a second output. KWin has to offer `zwlr_layer_shell_v1`, `wp_viewporter`, and `org.kde.KWin.ScreenShot2`. The session needs `XDG_MENU_PREFIX=plasma-` (startplasma sets this). Without that prefix KWin answers `NoAuthorized` to screen capture.
+Kubuntu 26.04 (Plasma 6 on Wayland) with a second output. KWin has to offer `zwlr_layer_shell_v1`, `wp_viewporter`, `wl_subcompositor`, and `org.kde.KWin.ScreenShot2`. The session needs `XDG_MENU_PREFIX=plasma-` (startplasma sets this). Without that prefix KWin answers `NoAuthorized` to screen capture.
 
 ## Run
 
