@@ -24,6 +24,16 @@ cargo build --release
 ./target/release/screenmirror
 ```
 
+## Releases
+
+Pushing a version tag (`v*`, for example `v0.1.0`) runs GitHub Actions: it tests, builds a Linux x86_64 release binary, and publishes a GitHub Release with
+`screenmirror-<tag>-x86_64-unknown-linux-gnu.tar.gz` attached.
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 `--install` writes `~/.local/share/applications/screenmirror.desktop` with `X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2` and refreshes the KDE service cache. KWin only allows capture from an executable named by that desktop file.
 
 ```text
