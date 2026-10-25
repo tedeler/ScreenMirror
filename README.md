@@ -2,9 +2,13 @@
 
 Mirror the screen that holds the KDE panel onto the other screen, on Plasma (Wayland). The source is whichever output the toolbar is on, not a connector name or a fixed output index. Move the panel to the other screen and the mirror follows. The system-tray menu has three modes:
 
-- **Full** (default). The whole primary screen is stretched to fill the secondary screen. Aspect ratio is ignored.
-- **Zoom**. Drag out a region on the primary screen. That region is then stretched to fill the secondary screen.
+- **Full** (default). The whole primary screen is shown on the secondary screen.
+- **Zoom**. Drag out a region on the primary screen. That region is then shown on the secondary screen.
 - **Black**. The secondary screen is solid black.
+
+**Seitenverhältnis behalten** is on by default. While it is on, Full and Zoom keep the source aspect ratio: the whole source stays visible and any unused area on the secondary screen is black. While it is off, the image is stretched to fill the secondary screen and aspect ratio is ignored. Black stays solid black either way.
+
+**Keine Spiegelung** removes the mirror and leaves the process and the tray running, the same as pressing Q while the mirror window is focused. **Auf diese Arbeitsfläche** moves the current mirror onto the virtual desktop that is current when the item is chosen, keeping the mode and any zoom region. If mirroring is off, that item starts Full on the current desktop.
 
 Written in Rust using only the standard library.
 
@@ -23,23 +27,25 @@ cargo build --release
 `--install` writes `~/.local/share/applications/screenmirror.desktop` with `X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2` and refreshes the KDE service cache. KWin only allows capture from an executable named by that desktop file.
 
 ```text
-screenmirror [--fps N] [--no-cursor]
+screenmirror [--fps N] [--no-cursor] [--no-mirror]
 screenmirror --install [--autostart]
 screenmirror --list-outputs
 screenmirror --screenshot OUTPUT FILE.ppm
 ```
 
+`--no-mirror` starts the tray without opening a mirror. Choose Full, Zoom, or Black to start.
+
 `SCREENMIRROR_SOURCE` and `SCREENMIRROR_TARGET` override output choice. By default the source is the output whose index is the Plasma toolbar's `lastScreen` in `plasma-org.kde.plasma.desktop-appletsrc` (KWin's output order), and the target is the other output.
 
 ## How it works
 
-The mirror is a fullscreen window on the target output, on the virtual desktop that is current when mirroring starts. Switch to another virtual desktop and that screen is a normal desktop again; switch back and the mirror returns. It is not placed on every desktop. Press **Q** while that mirror window is focused to remove it and leave ScreenMirror, including its tray icon, running. Q is not a global shortcut, so it still types in every other window. Choose Full, Zoom, or Black again to start on the desktop that is current then.
+The mirror is a fullscreen window on the target output, on the virtual desktop that is current when mirroring starts. Switch to another virtual desktop and that screen is a normal desktop again; switch back and the mirror returns. It is not placed on every desktop. **Auf diese Arbeitsfläche** closes that window and opens a new one, which KWin pins to the desktop that is current at that moment; the mode, including a zoom region, stays. Press **Q** while that mirror window is focused, or choose **Keine Spiegelung**, to remove it and leave ScreenMirror, including its tray icon, running. Q is not a global shortcut, so it still types in every other window. Choose Full, Zoom, or Black again to start on the desktop that is current then.
 
 Capture is one `org.kde.KWin.ScreenShot2.CaptureScreen` call per frame. KWin writes raw pixels down a pipe; the reply carries width, height, stride, and the QImage format.
 
-Frames live in `wl_shm` buffers. `wp_viewporter` scales the buffer (or, in Zoom, the chosen rectangle) to the output size. Black mode attaches a 1×1 black buffer and stretches it. The window is an `xdg_toplevel` sent `set_fullscreen` for the target output. A layer-shell overlay would be shown on every virtual desktop, so the mirror is not one. Q is a normal key on that window: it stops the mirror only when the window has keyboard focus. An older build registered Q with KGlobalAccel; this one removes that registration on startup so the letter works again in the rest of the session.
+Frames live in `wl_shm` buffers. With aspect kept, the toplevel is a 1×1 black buffer stretched to the output, and a centered `wl_subsurface` uses `wp_viewporter` to scale the whole frame (or, in Zoom, the chosen rectangle) so it fits. The compositor scales; the unused area is the black parent, and the source is not cropped. With aspect ignored, `wp_viewporter` stretches that same buffer to the output size. Black mode attaches only the 1×1 black buffer. The window is an `xdg_toplevel` sent `set_fullscreen` for the target output. A layer-shell overlay would be shown on every virtual desktop, so the mirror is not one. Q is a normal key on that window: it stops the mirror only when the window has keyboard focus. An older build registered Q with KGlobalAccel; this one removes that registration on startup so the letter works again in the rest of the session.
 
-The tray icon is an `org.kde.StatusNotifierItem`. Its context menu is `com.canonical.dbusmenu`, with radio items for the three modes. Choosing Zoom opens a dimmed overlay on the primary screen; drag with the left button to pick the region, or press Esc or the right button to cancel. While the mirror is stopped, none of the three modes is checked.
+The tray icon is an `org.kde.StatusNotifierItem`. Its context menu is `com.canonical.dbusmenu`, with radio items for the three modes and for **Keine Spiegelung**, a checkmark for **Seitenverhältnis behalten**, and an action **Auf diese Arbeitsfläche**. Choosing Zoom opens a dimmed overlay on the primary screen; drag with the left button to pick the region, or press Esc or the right button to cancel. While the mirror is stopped, **Keine Spiegelung** is checked and none of the three modes is.
 
 ## Test VM
 

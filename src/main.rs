@@ -17,8 +17,11 @@ const USAGE: &str = "\
 ScreenMirror – mirror the screen that has the Plasma panel onto the other screen
 
 Usage:
-  screenmirror [--fps N] [--no-cursor]   run (tray: Full / Zoom / Black; Q stops
-                                         the mirror only while its window is focused)
+  screenmirror [--fps N] [--no-cursor] [--no-mirror]
+                                         run (tray: Full / Zoom / Black,
+                                         Seitenverhältnis behalten,
+                                         Keine Spiegelung, Auf diese Arbeitsfläche;
+                                         Q stops the mirror only while its window is focused)
   screenmirror --install [--autostart]   write the .desktop file KWin needs to
                                          authorize screen capture (and autostart)
   screenmirror --list-outputs            show screens and which ones are used
@@ -91,7 +94,7 @@ fn install(autostart: bool) -> io::Result<()> {
 }
 
 fn list_outputs() -> io::Result<()> {
-    let (shared, _wake) = state::Shared::new()?;
+    let (shared, _wake) = state::Shared::new(true)?;
     let app = mirror::App::connect(shared, None)?;
     for o in &app.outputs {
         println!(
@@ -120,8 +123,8 @@ fn screenshot(output: &str, file: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn run(fps: u32, cursor: bool) -> io::Result<()> {
-    let (shared, wake) = state::Shared::new()?;
+fn run(fps: u32, cursor: bool, showing: bool) -> io::Result<()> {
+    let (shared, wake) = state::Shared::new(showing)?;
     let tray = match tray::start(shared.clone()) {
         Ok(t) => Some(t),
         Err(e) => {
@@ -145,10 +148,11 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut fps = 30;
     let mut cursor = true;
+    let mut showing = true;
     let mut i = 0;
     let result = loop {
         match args.get(i).map(String::as_str) {
-            None => break run(fps, cursor),
+            None => break run(fps, cursor, showing),
             Some("-h" | "--help") => {
                 print!("{USAGE}");
                 return;
@@ -172,6 +176,10 @@ fn main() {
             }
             Some("--no-cursor") => {
                 cursor = false;
+                i += 1;
+            }
+            Some("--no-mirror") => {
+                showing = false;
                 i += 1;
             }
             Some(other) => {
