@@ -21,7 +21,7 @@ Written in Rust using only the standard library.
 - `SCREENMIRROR_GIT_ID` — commit id. When it is set and non-empty, it wins over `git rev-parse HEAD`. `debian/rules` sets it from `git rev-parse HEAD`, or from the version in `debian/changelog` when that command fails. GitHub Actions sets it from `GITHUB_SHA`. If neither the variable nor git works, the window shows `unbekannt`.
 - `SOURCE_DATE_EPOCH` — Unix timestamp used as the build date, formatted as UTC `YYYY-MM-DD` (reproducible builds). When it is unset, the date is the current UTC date. If it is set but not an integer, or the clock cannot be read, the window shows `unbekannt`.
 
-The package version is `Cargo.toml`'s `version` (`0.1.0`). `debian/changelog` uses the same version. A missing git checkout or an offline build still compiles.
+The package version is `Cargo.toml`'s `version` (`0.0.2`). `debian/changelog` uses the same version. A missing git checkout or an offline build still compiles.
 
 ## Requirements
 
