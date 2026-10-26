@@ -3,6 +3,17 @@
 # release binary is built with the locked lockfile and installed by
 # debian/screenmirror.install.
 
+# Commit shown as Git-ID. A tree without git falls back to the changelog version,
+# then to the same placeholder the About window uses.
+git_id := $(shell git rev-parse HEAD 2>/dev/null)
+ifeq ($(strip $(git_id)),)
+git_id := $(shell sed -n 's/^screenmirror (\([^)]*\)).*/\1/p' debian/changelog | head -n 1)
+endif
+ifeq ($(strip $(git_id)),)
+git_id := unbekannt
+endif
+export SCREENMIRROR_GIT_ID := $(git_id)
+
 %:
 	dh $@ --buildsystem=none
 
