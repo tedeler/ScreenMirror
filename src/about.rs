@@ -65,6 +65,7 @@ pub fn content_size() -> (u32, u32) {
 }
 
 /// Path of the sans file used for the body, when one was found.
+#[cfg(test)]
 pub fn typeface_path() -> Option<String> {
     installed().map(|f| f.path.clone())
 }
@@ -107,12 +108,13 @@ fn load_face() -> Option<Face> {
     if let Some((bold_path, _)) = &bold_file {
         eprintln!("screenmirror: about title face {}", bold_path.display());
     }
-    eprintln!("screenmirror: about typeface {}", path.display());
-    Some(Face {
+    let face = Face {
         regular,
         bold: bold_file.map(|(_, font)| font),
         path: path.display().to_string(),
-    })
+    };
+    eprintln!("screenmirror: about typeface {}", face.path);
+    Some(face)
 }
 
 fn find_regular() -> Option<(PathBuf, Font)> {
