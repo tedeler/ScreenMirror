@@ -1,3 +1,4 @@
 target/release/screenmirror usr/bin
+target/release/screenmirror-about usr/libexec
 debian/applications/screenmirror.desktop usr/share/applications
 debian/autostart/screenmirror.desktop etc/xdg/autostart

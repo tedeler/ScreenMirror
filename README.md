@@ -10,13 +10,13 @@ Mirror the screen that holds the KDE panel onto the other screen, on Plasma (Way
 
 **Keine Spiegelung** removes the mirror and leaves the process and the tray running, the same as pressing Q while the mirror window is focused. **Auf diese Arbeitsfläche** moves the current mirror onto the virtual desktop that is current when the item is chosen, keeping the mode and any zoom region. If mirroring is off, that item starts Full on the current desktop.
 
-**Über** opens a window in this process (a normal Wayland toplevel, not a browser). The frame title is „Über ScreenMirror“. An illustration of two screens sits on the left. On the right, in the system sans-serif (fontconfig's `sans`, read from that font file at runtime), are the author, the package version, the git commit the binary was built from, and the build date. The Schließen button, Esc while that window is focused, or the frame's close button closes it. The window does not draw its own close glyph. The mirror and the tray keep running.
+**Über** starts a separate Qt dialog (`screenmirror-about`). The frame title is „Über ScreenMirror“. The dialog shows the author, the package version, the git commit the binary was built from, and the build date. Schließen, Esc, or the frame's close button dismisses only that dialog. A second click while it is open does not open another one. The mirror and the tray keep running. The Rust code does not draw the dialog.
 
-Written in Rust using only the standard library.
+The Rust side uses only the standard library. The dialog is a small C++ program built with Qt 6 widgets.
 
 ## Build identity
 
-`build.rs` compiles three strings into the binary. The Über window shows them; the process does not shell out to discover them.
+`build.rs` compiles three strings into the binary and builds the Qt dialog. The Über dialog shows the strings; the process does not shell out to discover them.
 
 - `SCREENMIRROR_GIT_ID` — commit id. When it is set and non-empty, it wins over `git rev-parse HEAD`. `debian/rules` sets it from `git rev-parse HEAD`, or from the version in `debian/changelog` when that command fails. GitHub Actions sets it from `GITHUB_SHA`. If neither the variable nor git works, the window shows `unbekannt`.
 - `SOURCE_DATE_EPOCH` — Unix timestamp used as the build date, formatted as UTC `YYYY-MM-DD` (reproducible builds). When it is unset, the date is the current UTC date. If it is set but not an integer, or the clock cannot be read, the window shows `unbekannt`.
@@ -25,7 +25,7 @@ The package version is `Cargo.toml`'s `version` (`0.0.6`). `debian/changelog` us
 
 ## Requirements
 
-Kubuntu 26.04 (Plasma 6 on Wayland) with a second output. KWin has to offer `zwlr_layer_shell_v1`, `wp_viewporter`, `wl_subcompositor`, and `org.kde.KWin.ScreenShot2`. The session needs `XDG_MENU_PREFIX=plasma-` (startplasma sets this). Without that prefix KWin answers `NoAuthorized` to screen capture.
+Kubuntu 26.04 (Plasma 6 on Wayland) with a second output. KWin has to offer `zwlr_layer_shell_v1`, `wp_viewporter`, `wl_subcompositor`, and `org.kde.KWin.ScreenShot2`. The session needs `XDG_MENU_PREFIX=plasma-` (startplasma sets this). Without that prefix KWin answers `NoAuthorized` to screen capture. Über needs Qt 6 widgets and the Wayland platform plugin (`qt6-wayland`). Building the dialog needs `g++`, `pkg-config`, and `qt6-base-dev`. KF6 is not required.
 
 ## Run
 
@@ -50,7 +50,7 @@ git push origin v0.0.6
 `debian/` is a source package. Build it locally the same way CI does:
 
 ```sh
-sudo apt install dpkg-dev debhelper cargo rustc
+sudo apt install dpkg-dev debhelper cargo rustc g++ pkg-config qt6-base-dev
 dpkg-buildpackage -us -uc
 sudo apt install ../screenmirror_0.0.6_amd64.deb
 ```
@@ -58,10 +58,11 @@ sudo apt install ../screenmirror_0.0.6_amd64.deb
 The build runs `cargo build --locked --release`. The `.deb` is written next to the source tree (one directory up). Its name follows `debian/changelog` and the host architecture (`screenmirror_0.0.6_amd64.deb` on amd64). It installs:
 
 - `/usr/bin/screenmirror`, the release binary.
+- `/usr/libexec/screenmirror-about`, the Qt dialog Über launches.
 - `/usr/share/applications/screenmirror.desktop`, the entry KWin matches to allow `org.kde.KWin.ScreenShot2`. `Exec=/usr/bin/screenmirror` is a normal launch.
 - `/etc/xdg/autostart/screenmirror.desktop`, system autostart for Plasma (`OnlyShowIn=KDE`, `Name=ScreenMirror`). `Exec=/usr/bin/screenmirror --no-mirror`, so the tray comes up and no mirror window is mapped until Full, Zoom, or Black is chosen. This file also sets `X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2`, which authorizes the autostarted process.
 
-The package Suggests `plasma-workspace`. `screenmirror --install [--autostart]` still writes a user-level desktop file. The package is the system install path.
+The package Depends on the Qt 6 libraries the dialog links, plus `qt6-wayland`, and Suggests `plasma-workspace`. `screenmirror --install [--autostart]` still writes a user-level desktop file. The package is the system install path.
 
 `--install` writes `~/.local/share/applications/screenmirror.desktop` with `X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2` and refreshes the KDE service cache. KWin only allows capture from an executable named by that desktop file.
 

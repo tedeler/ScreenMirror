@@ -27,6 +27,43 @@ fn main() {
     println!("cargo:rustc-env=SCREENMIRROR_GIT_ID={git}");
     println!("cargo:rustc-env=SCREENMIRROR_BUILD_DATE={date}");
     eprintln!("screenmirror: Git-ID {git} Baudatum {date}");
+    compile_about_helper(&manifest);
+}
+
+/// Builds the Qt dialog next to the cargo profile directory.
+fn compile_about_helper(manifest_dir: &str) {
+    println!("cargo:rerun-if-changed=src/about_dialog.cpp");
+    let out_dir = std::env::var("OUT_DIR").unwrap_or_else(|_| "target".into());
+    let built = Path::new(&out_dir).join("screenmirror-about");
+    let flags = Command::new("pkg-config")
+        .args(["--cflags", "--libs", "Qt6Widgets"])
+        .output()
+        .unwrap_or_else(|e| panic!("pkg-config Qt6Widgets: {e} (install qt6-base-dev)"));
+    if !flags.status.success() {
+        panic!(
+            "pkg-config Qt6Widgets failed: {}",
+            String::from_utf8_lossy(&flags.stderr)
+        );
+    }
+    let mut cmd = Command::new("g++");
+    cmd.args(["-std=c++17", "-O2", "-fPIC", "-o"])
+        .arg(&built)
+        .arg(Path::new(manifest_dir).join("src/about_dialog.cpp"));
+    for flag in String::from_utf8_lossy(&flags.stdout).split_whitespace() {
+        cmd.arg(flag);
+    }
+    let status = cmd.status().unwrap_or_else(|e| panic!("g++: {e}"));
+    if !status.success() {
+        panic!("failed to compile src/about_dialog.cpp");
+    }
+    // target/<profile>/build/<pkg>/out -> target/<profile>
+    let profile_dir = Path::new(&out_dir)
+        .ancestors()
+        .nth(3)
+        .unwrap_or(Path::new(&out_dir));
+    let sibling = profile_dir.join("screenmirror-about");
+    std::fs::copy(&built, &sibling).unwrap_or_else(|e| panic!("copy about helper: {e}"));
+    println!("cargo:rustc-env=SCREENMIRROR_ABOUT_HELPER={}", sibling.display());
 }
 
 /// Rebuild when the checked-out commit changes. `.git/HEAD` is only a symbolic
