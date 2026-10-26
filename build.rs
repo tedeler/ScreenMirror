@@ -13,13 +13,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
-    let git_meta = Path::new(&manifest).join(".git");
-    if git_meta.is_dir() {
-        let head = git_meta.join("HEAD");
-        if head.exists() {
-            println!("cargo:rerun-if-changed={}", head.display());
-        }
-    }
+    watch_git(&manifest);
 
     let git = git_id(&manifest);
     let date = build_date();
@@ -33,6 +27,36 @@ fn main() {
     println!("cargo:rustc-env=SCREENMIRROR_GIT_ID={git}");
     println!("cargo:rustc-env=SCREENMIRROR_BUILD_DATE={date}");
     eprintln!("screenmirror: Git-ID {git} Baudatum {date}");
+}
+
+/// Rebuild when the checked-out commit changes. `.git/HEAD` is only a symbolic
+/// ref, so the branch file (or `packed-refs`) is what a commit actually updates.
+fn watch_git(manifest_dir: &str) {
+    let git_meta = Path::new(manifest_dir).join(".git");
+    let git_dir = if git_meta.is_dir() {
+        git_meta
+    } else if git_meta.is_file() {
+        let Ok(text) = std::fs::read_to_string(&git_meta) else { return };
+        let Some(dir) = text.trim().strip_prefix("gitdir: ") else { return };
+        Path::new(dir).to_path_buf()
+    } else {
+        return;
+    };
+    let head = git_dir.join("HEAD");
+    if head.exists() {
+        println!("cargo:rerun-if-changed={}", head.display());
+    }
+    let Ok(text) = std::fs::read_to_string(&head) else { return };
+    if let Some(r) = text.trim().strip_prefix("ref: ") {
+        let ref_file = git_dir.join(r);
+        if ref_file.exists() {
+            println!("cargo:rerun-if-changed={}", ref_file.display());
+        }
+    }
+    let packed = git_dir.join("packed-refs");
+    if packed.exists() {
+        println!("cargo:rerun-if-changed={}", packed.display());
+    }
 }
 
 fn git_id(manifest_dir: &str) -> String {
