@@ -29,6 +29,10 @@ const BODY_INK: [u8; 4] = [0x33, 0x2F, 0x2C, 0xFF];
 const ACCENT: [u8; 4] = [0xE9, 0xAE, 0x3D, 0xFF];
 const BORDER: [u8; 4] = [0xDC, 0xD4, 0xD0, 0xFF];
 const DIVIDER: [u8; 4] = [0xED, 0xE8, 0xE6, 0xFF];
+/// Warm disc behind the corner ×, still lighter than the ink.
+const CLOSE_DISC: [u8; 4] = [0xC4, 0xCE, 0xD8, 0xFF];
+/// Side of the square close control, in buffer pixels.
+const CLOSE_SIDE: u32 = 40;
 
 const REGULAR_CANDIDATES: &[&str] = &[
     "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
@@ -91,7 +95,33 @@ pub fn render(width: u32, height: u32) -> Vec<u8> {
         Some(face) => paint_face(&mut buf, width, height, face),
         None => paint_notice(&mut buf, width, height),
     }
+    paint_close(&mut buf, width, height);
     buf
+}
+
+/// Square hit target of the corner close control, in buffer pixels.
+/// `(x, y, width, height)`. Empty when the surface is too small to draw one.
+pub fn close_rect(width: u32, height: u32) -> (i32, i32, u32, u32) {
+    if width < 16 || height < 16 {
+        return (0, 0, 0, 0);
+    }
+    let side = CLOSE_SIDE.min(width).min(height);
+    let inset_x = 10.min((width - side) as i32);
+    let inset_y = 10.min((height - side) as i32);
+    let x = width as i32 - side as i32 - inset_x;
+    (x.max(0), inset_y.max(0), side, side)
+}
+
+/// True when `(px, py)` lies in the close control. Coordinates are surface pixels.
+pub fn close_contains(width: u32, height: u32, px: f64, py: f64) -> bool {
+    if !px.is_finite() || !py.is_finite() {
+        return false;
+    }
+    let (x, y, w, h) = close_rect(width, height);
+    if w == 0 || h == 0 {
+        return false;
+    }
+    px >= x as f64 && py >= y as f64 && px < x as f64 + w as f64 && py < y as f64 + h as f64
 }
 
 fn installed() -> Option<&'static Face> {
@@ -529,6 +559,72 @@ fn stroke(
     }
 }
 
+fn paint_close(buf: &mut [u8], width: u32, height: u32) {
+    let (x, y, w, h) = close_rect(width, height);
+    if w < 8 || h < 8 {
+        return;
+    }
+    let cx = x as f32 + w as f32 * 0.5;
+    let cy = y as f32 + h as f32 * 0.5;
+    let disc_r = w.min(h) as f32 * 0.46;
+    paint_disc(buf, width, height, cx, cy, disc_r, CLOSE_DISC);
+    let arm = w.min(h) as f32 * 0.28;
+    let radius = (w.min(h) as f32 * 0.075).max(1.6);
+    stroke(
+        buf,
+        width,
+        height,
+        cx - arm,
+        cy - arm,
+        cx + arm,
+        cy + arm,
+        radius,
+        TITLE_INK,
+    );
+    stroke(
+        buf,
+        width,
+        height,
+        cx + arm,
+        cy - arm,
+        cx - arm,
+        cy + arm,
+        radius,
+        TITLE_INK,
+    );
+}
+
+fn paint_disc(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    color: [u8; 4],
+) {
+    let edge = 0.85;
+    let minx = (cx - radius - edge - 1.0).floor() as i32;
+    let maxx = (cx + radius + edge + 1.0).ceil() as i32;
+    let miny = (cy - radius - edge - 1.0).floor() as i32;
+    let maxy = (cy + radius + edge + 1.0).ceil() as i32;
+    for y in miny..=maxy {
+        for x in minx..=maxx {
+            let d = (x as f32 + 0.5 - cx).hypot(y as f32 + 0.5 - cy);
+            let cov = if d <= radius - edge {
+                1.0
+            } else if d >= radius + edge {
+                0.0
+            } else {
+                (radius + edge - d) / (2.0 * edge)
+            };
+            if cov > 0.0 {
+                ttf::blend(buf, width, height, x, y, color, cov);
+            }
+        }
+    }
+}
+
 fn paint_paper(buf: &mut [u8], width: u32, height: u32) {
     for px in buf.chunks_exact_mut(4) {
         px.copy_from_slice(&PAPER);
@@ -707,6 +803,40 @@ mod tests {
             text_w + PAD_X * 2.0 + 4.0 <= w as f32,
             "git line {text_w} in {w}"
         );
+    }
+
+    #[test]
+    fn close_control_is_a_cross_in_the_top_right() {
+        let (w, h) = content_size();
+        let (x, y, bw, bh) = close_rect(w, h);
+        assert!(bw >= 16 && bh >= 16, "close control {bw}x{bh}");
+        assert!(x as u32 > w / 2, "close control stays on the right, x {x}");
+        assert!(y < 24, "close control stays in the top corner, y {y}");
+        assert!(x as u32 + bw < w, "inset from the hairline");
+        let buf = render(w, h);
+        let sum = |px: i32, py: i32| {
+            let i = ((py as u32 * w + px as u32) * 4) as usize;
+            buf[i] as u16 + buf[i + 1] as u16 + buf[i + 2] as u16
+        };
+        let cx = x + bw as i32 / 2;
+        let cy = y + bh as i32 / 2;
+        assert!(sum(cx, cy) < 250, "crossing of the × should be dark");
+        // Both arms of the ×, inside the stroke, not only the center pixel.
+        for (dx, dy) in [(5, 5), (-5, -5), (5, -5), (-5, 5)] {
+            assert!(
+                sum(cx + dx, cy + dy) < 250,
+                "arm at {dx},{dy} sum {}",
+                sum(cx + dx, cy + dy)
+            );
+        }
+        // Straight above the crossing is the disc, so the mark is a cross.
+        assert!(sum(cx, cy - 14) > 400, "disc above the × stays light");
+        assert!(close_contains(w, h, cx as f64, cy as f64));
+        assert!(close_contains(w, h, x as f64, y as f64));
+        assert!(!close_contains(w, h, x as f64 + bw as f64, cy as f64));
+        assert!(!close_contains(w, h, 20.0, 30.0));
+        assert!(!close_contains(w, h, f64::NAN, 0.0));
+        assert_eq!(close_rect(0, 0), (0, 0, 0, 0));
     }
 
     #[test]

@@ -11,7 +11,11 @@
 //!   forced onto every desktop, which is why the mirror is not one.
 //! * The zoom region selector is a layer surface on the source output that
 //!   shows a dimmed freeze-frame; drag with the left button to select,
-//!   Esc / right click cancels.
+//!   Esc / right click cancels. Esc while the Über window is focused closes
+//!   that window instead, and is not a global shortcut.
+//! * The Über window draws its own ×. Clicking it closes only that window.
+//!   When the compositor offers `zxdg_decoration_manager_v1`, the window also
+//!   asks for server-side decorations so the frame can show a close button.
 //! * Q unmaps the mirror when that window has keyboard focus, and leaves the process up.
 //!   It is not a global shortcut, so Q still types everywhere else.
 //! * Shift+S swaps the two screens while that same window has keyboard focus.
@@ -33,6 +37,8 @@ const ANCHOR_ALL: u32 = 1 | 2 | 4 | 8;
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const KEY_ESC: u32 = 1;
+/// `zxdg_toplevel_decoration_v1.mode.server_side`.
+const XDG_DECORATION_SERVER_SIDE: u32 = 2;
 /// Linux evdev code for the letter q. Only handled while the mirror window is focused.
 const KEY_Q: u32 = 16;
 /// Linux evdev code for the letter s. With Shift, swaps screens while the mirror is focused.
@@ -40,6 +46,44 @@ const KEY_S: u32 = 31;
 /// XKB Shift (bit 0). Caps Lock is bit 1 and does not count.
 const XKB_MOD_SHIFT: u32 = 1;
 const CURSOR_CROSSHAIR: u32 = 8;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum KeyAction {
+    None,
+    /// Esc on the focused Über window. Does not cancel a zoom selection.
+    CloseAbout,
+    /// Esc while a zoom selection is active and Über is not the focused window.
+    CancelSelection,
+    StopMirror,
+    SwapOutputs,
+}
+
+/// Key routing for press events. Q and Shift+S stay on the mirror window.
+/// Esc closes Über only when that window has keyboard focus; otherwise it
+/// still cancels an active zoom selection.
+fn key_action(
+    key: u32,
+    pressed: bool,
+    about_focused: bool,
+    selection_active: bool,
+    mirror_focused: bool,
+    shift_down: bool,
+) -> KeyAction {
+    if !pressed {
+        return KeyAction::None;
+    }
+    if key == KEY_ESC && about_focused {
+        KeyAction::CloseAbout
+    } else if key == KEY_ESC && selection_active {
+        KeyAction::CancelSelection
+    } else if key == KEY_Q && mirror_focused {
+        KeyAction::StopMirror
+    } else if key == KEY_S && shift_down && mirror_focused {
+        KeyAction::SwapOutputs
+    } else {
+        KeyAction::None
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Obj {
@@ -116,6 +160,8 @@ struct AboutWin {
     pending_w: i32,
     pending_h: i32,
     shown: u32,
+    /// `zxdg_toplevel_decoration_v1`, or 0 when the compositor has no manager.
+    decoration: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -154,6 +200,8 @@ struct Globals {
     subcompositor: u32,
     layer_shell: u32,
     wm_base: u32,
+    /// `zxdg_decoration_manager_v1`, when the compositor offers it. Zero otherwise.
+    decoration_manager: u32,
     cursor_shape: u32,
     seat: u32,
     output_order: u32,
@@ -172,6 +220,10 @@ pub struct App {
     outputs_dirty: bool,
     pointer: u32,
     keyboard: u32,
+    /// `wl_surface` under the pointer, from enter/leave.
+    pointer_surface: Option<u32>,
+    pointer_x: f64,
+    pointer_y: f64,
     /// `wl_surface` that currently has keyboard focus, if it is one of ours.
     keyboard_focus: Option<u32>,
     /// Shift from `wl_keyboard.modifiers` (opcode 4). Not Caps Lock.
@@ -321,6 +373,9 @@ impl App {
             outputs_dirty: false,
             pointer: 0,
             keyboard: 0,
+            pointer_surface: None,
+            pointer_x: 0.0,
+            pointer_y: 0.0,
             keyboard_focus: None,
             shift_down: false,
             swapped: false,
@@ -368,6 +423,7 @@ impl App {
                 "wl_subcompositor" => 1,
                 "zwlr_layer_shell_v1" => 3,
                 "xdg_wm_base" => 6,
+                "zxdg_decoration_manager_v1" => 1,
                 "wp_cursor_shape_manager_v1" => 1,
                 "wl_seat" => 5,
                 "wl_output" => 4,
@@ -381,6 +437,7 @@ impl App {
                 "wl_subcompositor" => Some(&mut self.g.subcompositor),
                 "zwlr_layer_shell_v1" => Some(&mut self.g.layer_shell),
                 "xdg_wm_base" => Some(&mut self.g.wm_base),
+                "zxdg_decoration_manager_v1" => Some(&mut self.g.decoration_manager),
                 "wp_cursor_shape_manager_v1" => Some(&mut self.g.cursor_shape),
                 "wl_seat" => Some(&mut self.g.seat),
                 "kde_output_order_v1" => Some(&mut self.g.output_order),
@@ -545,18 +602,36 @@ impl App {
             }
             (Obj::Keyboard, 3) => {
                 let (_serial, _time, key, state) = (a.u32(), a.u32(), a.u32(), a.u32());
-                if state != 1 {
-                    return Ok(());
-                }
-                let mirror_focused = self.mirror.as_ref().is_some_and(|m| self.keyboard_focus == Some(m.surface));
-                if key == KEY_ESC && self.selection.is_some() {
-                    self.finish_selection(false)?;
-                } else if key == KEY_Q && mirror_focused {
-                    eprintln!("screenmirror: Q on the focused mirror window");
-                    self.stop_mirror()?;
-                } else if key == KEY_S && self.shift_down && mirror_focused {
-                    eprintln!("screenmirror: Shift+S on the focused mirror window");
-                    self.swap_outputs()?;
+                let about_focused = self
+                    .about
+                    .as_ref()
+                    .is_some_and(|m| self.keyboard_focus == Some(m.surface));
+                let mirror_focused = self
+                    .mirror
+                    .as_ref()
+                    .is_some_and(|m| self.keyboard_focus == Some(m.surface));
+                match key_action(
+                    key,
+                    state == 1,
+                    about_focused,
+                    self.selection.is_some(),
+                    mirror_focused,
+                    self.shift_down,
+                ) {
+                    KeyAction::None => {}
+                    KeyAction::CloseAbout => {
+                        eprintln!("screenmirror: Esc on the focused about window");
+                        self.close_about()?;
+                    }
+                    KeyAction::CancelSelection => self.finish_selection(false)?,
+                    KeyAction::StopMirror => {
+                        eprintln!("screenmirror: Q on the focused mirror window");
+                        self.stop_mirror()?;
+                    }
+                    KeyAction::SwapOutputs => {
+                        eprintln!("screenmirror: Shift+S on the focused mirror window");
+                        self.swap_outputs()?;
+                    }
                 }
             }
             (Obj::Keyboard, 4) => {
@@ -665,29 +740,63 @@ impl App {
     }
 
     fn pointer_event(&mut self, op: u16, a: &mut Args) -> io::Result<()> {
-        let Some(sel) = self.selection.as_mut() else { return Ok(()) };
         match op {
             0 => {
                 let serial = a.u32();
                 let surface = a.u32();
                 let (x, y) = (a.fixed(), a.fixed());
-                if surface == sel.surf.surface {
-                    sel.cur = (x, y);
+                self.pointer_surface = Some(surface);
+                self.pointer_x = x;
+                self.pointer_y = y;
+                if self.selection.as_ref().is_some_and(|s| s.surf.surface == surface) {
+                    if let Some(sel) = self.selection.as_mut() {
+                        sel.cur = (x, y);
+                    }
                     if self.cursor_device != 0 {
                         self.conn.send(Req::new(self.cursor_device, 1).u32(serial).u32(CURSOR_CROSSHAIR))?;
                     }
                 }
             }
+            1 => {
+                let _serial = a.u32();
+                let surface = a.u32();
+                if self.pointer_surface == Some(surface) {
+                    self.pointer_surface = None;
+                }
+            }
             2 => {
                 let _time = a.u32();
-                sel.cur = (a.fixed(), a.fixed());
-                if sel.start.is_some() {
-                    sel.dirty = true;
-                    self.draw_selection()?;
+                let (x, y) = (a.fixed(), a.fixed());
+                self.pointer_x = x;
+                self.pointer_y = y;
+                let on_selection = self
+                    .selection
+                    .as_ref()
+                    .is_some_and(|s| self.pointer_surface == Some(s.surf.surface));
+                if on_selection {
+                    if let Some(sel) = self.selection.as_mut() {
+                        sel.cur = (x, y);
+                        if sel.start.is_some() {
+                            sel.dirty = true;
+                            self.draw_selection()?;
+                        }
+                    }
                 }
             }
             3 => {
                 let (_serial, _time, button, state) = (a.u32(), a.u32(), a.u32(), a.u32());
+                if button == BTN_LEFT && state == 1 && self.pointer_on_about_close() {
+                    eprintln!("screenmirror: about close button");
+                    return self.close_about();
+                }
+                let on_selection = self
+                    .selection
+                    .as_ref()
+                    .is_some_and(|s| self.pointer_surface == Some(s.surf.surface));
+                if !on_selection {
+                    return Ok(());
+                }
+                let Some(sel) = self.selection.as_mut() else { return Ok(()) };
                 match (button, state) {
                     (BTN_LEFT, 1) => {
                         sel.start = Some(sel.cur);
@@ -702,6 +811,19 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    fn pointer_on_about_close(&self) -> bool {
+        let Some(about) = self.about.as_ref() else { return false };
+        if self.pointer_surface != Some(about.surface) || about.width <= 0 || about.height <= 0 {
+            return false;
+        }
+        crate::about::close_contains(
+            about.width as u32,
+            about.height as u32,
+            self.pointer_x,
+            self.pointer_y,
+        )
     }
 
     fn output_id(&self, name: &str) -> Option<u32> {
@@ -927,6 +1049,7 @@ impl App {
         self.conn.send(Req::new(toplevel, 3).string("screenmirror"))?;
         self.conn.send(Req::new(toplevel, 8).i32(w).i32(h))?;
         self.conn.send(Req::new(toplevel, 7).i32(w).i32(h))?;
+        let decoration = self.request_about_decoration(toplevel)?;
         self.conn.send(Req::new(surface, 6))?;
         Ok(AboutWin {
             surface,
@@ -938,20 +1061,44 @@ impl App {
             pending_w: 0,
             pending_h: 0,
             shown: 0,
+            decoration,
         })
+    }
+
+    /// Asks KWin for a server-side frame when `zxdg_decoration_manager_v1` is bound.
+    /// The in-window × does not depend on this.
+    fn request_about_decoration(&mut self, toplevel: u32) -> io::Result<u32> {
+        if self.g.decoration_manager == 0 {
+            return Ok(0);
+        }
+        let decoration = self.conn.new_id();
+        self.conn.send(Req::new(self.g.decoration_manager, 1).u32(decoration).u32(toplevel))?;
+        self.conn.send(Req::new(decoration, 1).u32(XDG_DECORATION_SERVER_SIDE))?;
+        eprintln!("screenmirror: about window requests server-side decorations");
+        Ok(decoration)
     }
 
     fn destroy_about(&mut self, w: AboutWin) -> io::Result<()> {
         self.objects.remove(&w.toplevel);
         self.objects.remove(&w.xdg);
+        if w.decoration != 0 {
+            self.conn.send(Req::new(w.decoration, 0))?;
+        }
         self.conn.send(Req::new(w.toplevel, 0))?;
         self.conn.send(Req::new(w.xdg, 0))?;
         self.conn.send(Req::new(w.surface, 0))
     }
 
     /// Drops the Über window only. The mirror, the tray, and the process stay up.
+    /// The xdg close event and the in-window × both end here.
     fn close_about(&mut self) -> io::Result<()> {
         if let Some(w) = self.about.take() {
+            if self.keyboard_focus == Some(w.surface) {
+                self.keyboard_focus = None;
+            }
+            if self.pointer_surface == Some(w.surface) {
+                self.pointer_surface = None;
+            }
             self.destroy_about(w)?;
         }
         self.shared.update(|st| st.show_about = false);
@@ -1498,6 +1645,27 @@ plugin=org.kde.plasma.folder
         assert_eq!(super::exchange_pair(true, v1.clone(), None), (v1.clone(), None));
         assert_eq!(super::exchange_pair(true, None, v2.clone()), (None, v2.clone()));
         assert_eq!(super::exchange_pair(true, v1.clone(), v1.clone()), (v1.clone(), v1));
+    }
+
+    #[test]
+    fn esc_closes_about_only_when_that_window_is_focused() {
+        use super::{key_action, KeyAction};
+        assert_eq!(key_action(1, true, true, false, false, false), KeyAction::CloseAbout);
+        // Focused Über wins over an active selection, so Esc is not global.
+        assert_eq!(key_action(1, true, true, true, false, false), KeyAction::CloseAbout);
+        assert_eq!(key_action(1, true, false, true, true, false), KeyAction::CancelSelection);
+        assert_eq!(key_action(1, true, false, false, true, false), KeyAction::None);
+        assert_eq!(key_action(1, false, true, true, false, false), KeyAction::None);
+    }
+
+    #[test]
+    fn q_and_shift_s_stay_on_the_mirror_window() {
+        use super::{key_action, KeyAction, KEY_Q, KEY_S};
+        assert_eq!(key_action(KEY_Q, true, false, false, true, false), KeyAction::StopMirror);
+        assert_eq!(key_action(KEY_Q, true, true, false, false, false), KeyAction::None);
+        assert_eq!(key_action(KEY_S, true, false, false, true, true), KeyAction::SwapOutputs);
+        assert_eq!(key_action(KEY_S, true, true, false, false, true), KeyAction::None);
+        assert_eq!(key_action(KEY_S, true, false, false, true, false), KeyAction::None);
     }
 }
 
