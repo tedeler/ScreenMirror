@@ -14,7 +14,8 @@
 //!   Esc / right click cancels.
 //! * Q unmaps the mirror when that window has keyboard focus, and leaves the process up.
 //!   It is not a global shortcut, so Q still types everywhere else.
-//! * Über is a separate xdg toplevel. Its close button destroys only that window.
+//! * Shift+S swaps the two screens while that same window has keyboard focus.
+//!   It is not a global shortcut either.
 
 use std::collections::HashMap;
 use std::io::{self, Read};
@@ -34,6 +35,10 @@ const BTN_RIGHT: u32 = 0x111;
 const KEY_ESC: u32 = 1;
 /// Linux evdev code for the letter q. Only handled while the mirror window is focused.
 const KEY_Q: u32 = 16;
+/// Linux evdev code for the letter s. With Shift, swaps screens while the mirror is focused.
+const KEY_S: u32 = 31;
+/// XKB Shift (bit 0). Caps Lock is bit 1 and does not count.
+const XKB_MOD_SHIFT: u32 = 1;
 const CURSOR_CROSSHAIR: u32 = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -169,6 +174,11 @@ pub struct App {
     keyboard: u32,
     /// `wl_surface` that currently has keyboard focus, if it is one of ours.
     keyboard_focus: Option<u32>,
+    /// Shift from `wl_keyboard.modifiers` (opcode 4). Not Caps Lock.
+    shift_down: bool,
+    /// When set, source and target are the `choose_outputs` pair reversed.
+    /// Not persisted. A new process starts unswapped.
+    swapped: bool,
     cursor_device: u32,
     slots: Vec<Slot>,
     black: Option<Slot>,
@@ -186,6 +196,19 @@ pub struct App {
 
 fn env_output(var: &str) -> Option<String> {
     std::env::var(var).ok().filter(|s| !s.is_empty())
+}
+
+/// Reverse `source` and `target` when `swapped` and both names exist and differ.
+/// Otherwise the pair is unchanged, including a missing name or two equal names.
+fn exchange_pair(
+    swapped: bool,
+    source: Option<String>,
+    target: Option<String>,
+) -> (Option<String>, Option<String>) {
+    match (swapped, &source, &target) {
+        (true, Some(s), Some(t)) if s != t => (target, source),
+        _ => (source, target),
+    }
 }
 
 /// Plasma writes this when the desktop shell is `org.kde.plasma.desktop`.
@@ -299,6 +322,8 @@ impl App {
             pointer: 0,
             keyboard: 0,
             keyboard_focus: None,
+            shift_down: false,
+            swapped: false,
             cursor_device: 0,
             slots: Vec::new(),
             black: None,
@@ -523,12 +548,24 @@ impl App {
                 if state != 1 {
                     return Ok(());
                 }
+                let mirror_focused = self.mirror.as_ref().is_some_and(|m| self.keyboard_focus == Some(m.surface));
                 if key == KEY_ESC && self.selection.is_some() {
                     self.finish_selection(false)?;
-                } else if key == KEY_Q && self.mirror.as_ref().is_some_and(|m| self.keyboard_focus == Some(m.surface)) {
+                } else if key == KEY_Q && mirror_focused {
                     eprintln!("screenmirror: Q on the focused mirror window");
                     self.stop_mirror()?;
+                } else if key == KEY_S && self.shift_down && mirror_focused {
+                    eprintln!("screenmirror: Shift+S on the focused mirror window");
+                    self.swap_outputs()?;
                 }
+            }
+            (Obj::Keyboard, 4) => {
+                let _serial = a.u32();
+                let mods_depressed = a.u32();
+                let mods_latched = a.u32();
+                let _mods_locked = a.u32();
+                let _group = a.u32();
+                self.shift_down = (mods_depressed | mods_latched) & XKB_MOD_SHIFT != 0;
             }
             (Obj::Buffer, 0) => {
                 for s in self.slots.iter_mut().chain(self.black.iter_mut()) {
@@ -707,17 +744,39 @@ impl App {
         (source, target)
     }
 
+    /// Base pair from `choose_outputs`. If that pair has two different outputs,
+    /// flip `swapped` and apply it immediately. One screen leaves `swapped` as it is.
+    fn swap_outputs(&mut self) -> io::Result<()> {
+        let (source, target) = self.choose_outputs();
+        let can_swap = matches!((&source, &target), (Some(s), Some(t)) if s != t);
+        if !can_swap {
+            eprintln!("screenmirror: Shift+S ignored; no second screen, swap unchanged");
+            return Ok(());
+        }
+        self.swapped = !self.swapped;
+        let (source, target) = exchange_pair(self.swapped, source, target);
+        eprintln!(
+            "screenmirror: swapped screens: source {}, target {}",
+            source.as_deref().unwrap_or("(none)"),
+            target.as_deref().unwrap_or("(none)")
+        );
+        self.reconfigure_outputs()
+    }
+
     fn reconfigure_outputs(&mut self) -> io::Result<()> {
         self.outputs_dirty = false;
         self.refresh_panel_screen();
-        let (source, target) = self.choose_outputs();
+        let (base_source, base_target) = self.choose_outputs();
+        let (source, target) = exchange_pair(self.swapped, base_source.clone(), base_target);
         if source != self.source {
             if let Some(sel) = self.selection.take() {
                 self.destroy_layer(sel.surf)?;
                 self.selection_wait_seq = None;
                 self.shared.update(|st| st.selecting = false);
             }
-            let why = if env_output("SCREENMIRROR_SOURCE").is_some() {
+            let why = if source != base_source {
+                "swapped"
+            } else if env_output("SCREENMIRROR_SOURCE").is_some() {
                 "override"
             } else if self.panel_screen.is_some_and(|i| {
                 self.ordered_outputs().get(i as usize).is_some_and(|o| Some(&o.name) == source.as_ref())
@@ -1428,6 +1487,17 @@ plugin=org.kde.plasma.folder
     #[test]
     fn contain_pillarboxes_a_tall_zoom_region() {
         assert_eq!(super::contain_rect(100.0, 200.0, 1024, 768), (320, 0, 384, 768));
+    }
+
+    #[test]
+    fn exchange_pair_swaps_two_distinct_outputs() {
+        let v1 = Some("Virtual-1".into());
+        let v2 = Some("Virtual-2".into());
+        assert_eq!(super::exchange_pair(true, v1.clone(), v2.clone()), (v2.clone(), v1.clone()));
+        assert_eq!(super::exchange_pair(false, v1.clone(), v2.clone()), (v1.clone(), v2.clone()));
+        assert_eq!(super::exchange_pair(true, v1.clone(), None), (v1.clone(), None));
+        assert_eq!(super::exchange_pair(true, None, v2.clone()), (None, v2.clone()));
+        assert_eq!(super::exchange_pair(true, v1.clone(), v1.clone()), (v1.clone(), v1));
     }
 }
 
