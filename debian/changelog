@@ -1,3 +1,10 @@
+screenmirror (0.0.3) unstable; urgency=medium
+
+  * Release 0.0.3.
+  * Draw the Über window with the system sans-serif.
+
+ -- Torsten Edeler <torsten.edeler@haw-hamburg.de>  Mon, 26 Oct 2026 07:58:06 +0000
+
 screenmirror (0.0.2) unstable; urgency=medium
 
   * Initial Debian package.
