@@ -11,12 +11,10 @@
 //!   forced onto every desktop, which is why the mirror is not one.
 //! * The zoom region selector is a layer surface on the source output that
 //!   shows a dimmed freeze-frame; drag with the left button to select,
-//!   Esc / right click cancels. Esc while the Über window is focused closes
-//!   that window instead, and is not a global shortcut.
-//! * The Über window draws its own × and a Schließen button. Either click closes
-//!   only that window.
-//!   When the compositor offers `zxdg_decoration_manager_v1`, the window also
-//!   asks for server-side decorations so the frame can show a close button.
+//!   Esc / right click cancels. Esc is not a global shortcut.
+//! * Über starts a separate Qt dialog. Schließen, Esc, and the frame close
+//!   dismiss only that dialog. This process does not draw it and does not
+//!   take its key events.
 //! * Q unmaps the mirror when that window has keyboard focus, and leaves the process up.
 //!   It is not a global shortcut, so Q still types everywhere else.
 //! * Shift+S swaps the two screens while that same window has keyboard focus.
@@ -38,8 +36,6 @@ const ANCHOR_ALL: u32 = 1 | 2 | 4 | 8;
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const KEY_ESC: u32 = 1;
-/// `zxdg_toplevel_decoration_v1.mode.server_side`.
-const XDG_DECORATION_SERVER_SIDE: u32 = 2;
 /// Linux evdev code for the letter q. Only handled while the mirror window is focused.
 const KEY_Q: u32 = 16;
 /// Linux evdev code for the letter s. With Shift, swaps screens while the mirror is focused.
@@ -51,21 +47,18 @@ const CURSOR_CROSSHAIR: u32 = 8;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum KeyAction {
     None,
-    /// Esc on the focused Über window. Does not cancel a zoom selection.
-    CloseAbout,
-    /// Esc while a zoom selection is active and Über is not the focused window.
+    /// Esc while a zoom selection is active. The Über dialog handles its own Esc.
     CancelSelection,
     StopMirror,
     SwapOutputs,
 }
 
 /// Key routing for press events. Q and Shift+S stay on the mirror window.
-/// Esc closes Über only when that window has keyboard focus; otherwise it
-/// still cancels an active zoom selection.
+/// Esc cancels an active zoom selection. It does not close Über: that dialog
+/// is another process and receives the key itself when it is focused.
 fn key_action(
     key: u32,
     pressed: bool,
-    about_focused: bool,
     selection_active: bool,
     mirror_focused: bool,
     shift_down: bool,
@@ -73,9 +66,7 @@ fn key_action(
     if !pressed {
         return KeyAction::None;
     }
-    if key == KEY_ESC && about_focused {
-        KeyAction::CloseAbout
-    } else if key == KEY_ESC && selection_active {
+    if key == KEY_ESC && selection_active {
         KeyAction::CancelSelection
     } else if key == KEY_Q && mirror_focused {
         KeyAction::StopMirror
@@ -149,22 +140,6 @@ struct XdgWin {
     shown: u32,
 }
 
-/// Normal (not fullscreen) toplevel for the Über window.
-#[derive(Clone, Copy)]
-struct AboutWin {
-    surface: u32,
-    xdg: u32,
-    toplevel: u32,
-    configured: bool,
-    width: i32,
-    height: i32,
-    pending_w: i32,
-    pending_h: i32,
-    shown: u32,
-    /// `zxdg_toplevel_decoration_v1`, or 0 when the compositor has no manager.
-    decoration: u32,
-}
-
 #[derive(Clone, Copy)]
 struct LayerSurf {
     surface: u32,
@@ -201,8 +176,6 @@ struct Globals {
     subcompositor: u32,
     layer_shell: u32,
     wm_base: u32,
-    /// `zxdg_decoration_manager_v1`, when the compositor offers it. Zero otherwise.
-    decoration_manager: u32,
     cursor_shape: u32,
     seat: u32,
     output_order: u32,
@@ -236,7 +209,6 @@ pub struct App {
     slots: Vec<Slot>,
     black: Option<Slot>,
     mirror: Option<XdgWin>,
-    about: Option<AboutWin>,
     drawn: Drawn,
     selection: Option<Selection>,
     selection_wait_seq: Option<u64>,
@@ -384,7 +356,6 @@ impl App {
             slots: Vec::new(),
             black: None,
             mirror: None,
-            about: None,
             drawn: Drawn::Nothing,
             selection: None,
             selection_wait_seq: None,
@@ -424,7 +395,6 @@ impl App {
                 "wl_subcompositor" => 1,
                 "zwlr_layer_shell_v1" => 3,
                 "xdg_wm_base" => 6,
-                "zxdg_decoration_manager_v1" => 1,
                 "wp_cursor_shape_manager_v1" => 1,
                 "wl_seat" => 5,
                 "wl_output" => 4,
@@ -438,7 +408,6 @@ impl App {
                 "wl_subcompositor" => Some(&mut self.g.subcompositor),
                 "zwlr_layer_shell_v1" => Some(&mut self.g.layer_shell),
                 "xdg_wm_base" => Some(&mut self.g.wm_base),
-                "zxdg_decoration_manager_v1" => Some(&mut self.g.decoration_manager),
                 "wp_cursor_shape_manager_v1" => Some(&mut self.g.cursor_shape),
                 "wl_seat" => Some(&mut self.g.seat),
                 "kde_output_order_v1" => Some(&mut self.g.output_order),
@@ -603,10 +572,6 @@ impl App {
             }
             (Obj::Keyboard, 3) => {
                 let (_serial, _time, key, state) = (a.u32(), a.u32(), a.u32(), a.u32());
-                let about_focused = self
-                    .about
-                    .as_ref()
-                    .is_some_and(|m| self.keyboard_focus == Some(m.surface));
                 let mirror_focused = self
                     .mirror
                     .as_ref()
@@ -614,16 +579,11 @@ impl App {
                 match key_action(
                     key,
                     state == 1,
-                    about_focused,
                     self.selection.is_some(),
                     mirror_focused,
                     self.shift_down,
                 ) {
                     KeyAction::None => {}
-                    KeyAction::CloseAbout => {
-                        eprintln!("screenmirror: Esc on the focused about window");
-                        self.close_about()?;
-                    }
                     KeyAction::CancelSelection => self.finish_selection(false)?,
                     KeyAction::StopMirror => {
                         eprintln!("screenmirror: Q on the focused mirror window");
@@ -679,41 +639,16 @@ impl App {
                     if h > 0 {
                         m.pending_h = h;
                     }
-                } else if let Some(about) = self.about.as_mut().filter(|m| m.surface == surface) {
-                    if w > 0 {
-                        about.pending_w = w;
-                    }
-                    if h > 0 {
-                        about.pending_h = h;
-                    }
                 }
             }
             (Obj::XdgToplevel(surface), 1) => {
                 if self.mirror.as_ref().is_some_and(|m| m.surface == surface) {
                     eprintln!("screenmirror: compositor closed the mirror window");
                     self.stop_mirror()?;
-                } else if self.about.as_ref().is_some_and(|m| m.surface == surface) {
-                    eprintln!("screenmirror: compositor closed the about window");
-                    self.close_about()?;
                 }
             }
             (Obj::XdgSurface(surface), 0) => {
                 let serial = a.u32();
-                if self.about.as_ref().is_some_and(|m| m.surface == surface) {
-                    let (xdg, width, height) = {
-                        let pref = crate::about::content_size();
-                        let m = self.about.as_mut().unwrap();
-                        let w = if m.pending_w > 0 { m.pending_w } else { pref.0 as i32 };
-                        let h = if m.pending_h > 0 { m.pending_h } else { pref.1 as i32 };
-                        m.configured = true;
-                        (m.width, m.height) = (w.max(1), h.max(1));
-                        (m.xdg, m.width, m.height)
-                    };
-                    self.conn.send(Req::new(xdg, 3).i32(0).i32(0).i32(width).i32(height))?;
-                    self.conn.send(Req::new(xdg, 4).u32(serial))?;
-                    self.draw_about()?;
-                    return Ok(());
-                }
                 if self.mirror.as_ref().is_none_or(|m| m.surface != surface) {
                     self.conn.send(Req::new(ev.obj, 4).u32(serial))?;
                     return Ok(());
@@ -786,14 +721,6 @@ impl App {
             }
             3 => {
                 let (_serial, _time, button, state) = (a.u32(), a.u32(), a.u32(), a.u32());
-                if button == BTN_LEFT && state == 1 && self.pointer_on_about_button() {
-                    eprintln!("screenmirror: Schließen button");
-                    return self.close_about();
-                }
-                if button == BTN_LEFT && state == 1 && self.pointer_on_about_close() {
-                    eprintln!("screenmirror: about corner close");
-                    return self.close_about();
-                }
                 let on_selection = self
                     .selection
                     .as_ref()
@@ -816,22 +743,6 @@ impl App {
             _ => {}
         }
         Ok(())
-    }
-
-    fn about_pointer(&self) -> Option<(u32, u32, f64, f64)> {
-        let about = self.about.as_ref()?;
-        if self.pointer_surface != Some(about.surface) || about.width <= 0 || about.height <= 0 {
-            return None;
-        }
-        Some((about.width as u32, about.height as u32, self.pointer_x, self.pointer_y))
-    }
-
-    fn pointer_on_about_close(&self) -> bool {
-        self.about_pointer().is_some_and(|(w, h, x, y)| crate::about::close_contains(w, h, x, y))
-    }
-
-    fn pointer_on_about_button(&self) -> bool {
-        self.about_pointer().is_some_and(|(w, h, x, y)| crate::about::button_contains(w, h, x, y))
     }
 
     fn output_id(&self, name: &str) -> Option<u32> {
@@ -1040,102 +951,6 @@ impl App {
         self.conn.send(Req::new(w.xdg, 0))?;
         self.conn.send(Req::new(w.viewport, 0))?;
         self.conn.send(Req::new(w.surface, 0))
-    }
-
-    fn create_about(&mut self) -> io::Result<AboutWin> {
-        let (w, h) = crate::about::content_size();
-        let (w, h) = (w as i32, h as i32);
-        let surface = self.conn.new_id();
-        self.conn.send(Req::new(self.g.compositor, 0).u32(surface))?;
-        let xdg = self.conn.new_id();
-        self.objects.insert(xdg, Obj::XdgSurface(surface));
-        self.conn.send(Req::new(self.g.wm_base, 2).u32(xdg).u32(surface))?;
-        let toplevel = self.conn.new_id();
-        self.objects.insert(toplevel, Obj::XdgToplevel(surface));
-        self.conn.send(Req::new(xdg, 1).u32(toplevel))?;
-        self.conn.send(Req::new(toplevel, 2).string(crate::about::WINDOW_TITLE))?;
-        self.conn.send(Req::new(toplevel, 3).string("screenmirror"))?;
-        self.conn.send(Req::new(toplevel, 8).i32(w).i32(h))?;
-        self.conn.send(Req::new(toplevel, 7).i32(w).i32(h))?;
-        let decoration = self.request_about_decoration(toplevel)?;
-        self.conn.send(Req::new(surface, 6))?;
-        Ok(AboutWin {
-            surface,
-            xdg,
-            toplevel,
-            configured: false,
-            width: w,
-            height: h,
-            pending_w: 0,
-            pending_h: 0,
-            shown: 0,
-            decoration,
-        })
-    }
-
-    /// Asks KWin for a server-side frame when `zxdg_decoration_manager_v1` is bound.
-    /// The in-window × does not depend on this.
-    fn request_about_decoration(&mut self, toplevel: u32) -> io::Result<u32> {
-        if self.g.decoration_manager == 0 {
-            return Ok(0);
-        }
-        let decoration = self.conn.new_id();
-        self.conn.send(Req::new(self.g.decoration_manager, 1).u32(decoration).u32(toplevel))?;
-        self.conn.send(Req::new(decoration, 1).u32(XDG_DECORATION_SERVER_SIDE))?;
-        eprintln!("screenmirror: about window requests server-side decorations");
-        Ok(decoration)
-    }
-
-    fn destroy_about(&mut self, w: AboutWin) -> io::Result<()> {
-        self.objects.remove(&w.toplevel);
-        self.objects.remove(&w.xdg);
-        if w.decoration != 0 {
-            self.conn.send(Req::new(w.decoration, 0))?;
-        }
-        self.conn.send(Req::new(w.toplevel, 0))?;
-        self.conn.send(Req::new(w.xdg, 0))?;
-        self.conn.send(Req::new(w.surface, 0))
-    }
-
-    /// Drops the Über window only. The mirror, the tray, and the process stay up.
-    /// The xdg close event, the in-window ×, and Schließen all end here.
-    fn close_about(&mut self) -> io::Result<()> {
-        if let Some(w) = self.about.take() {
-            if self.keyboard_focus == Some(w.surface) {
-                self.keyboard_focus = None;
-            }
-            if self.pointer_surface == Some(w.surface) {
-                self.pointer_surface = None;
-            }
-            self.destroy_about(w)?;
-        }
-        self.shared.update(|st| st.show_about = false);
-        Ok(())
-    }
-
-    fn draw_about(&mut self) -> io::Result<()> {
-        let Some(w) = self.about.as_ref().copied() else { return Ok(()) };
-        if !w.configured || w.width <= 0 || w.height <= 0 {
-            return Ok(());
-        }
-        let (width, height) = (w.width as u32, w.height as u32);
-        let stride = width.saturating_mul(4);
-        let pixels = crate::about::render(width, height);
-        let i = self.slot_for(width, height, stride, w.shown)?;
-        {
-            let slot = &mut self.slots[i];
-            let n = slot.map.as_mut_slice().len().min(pixels.len());
-            slot.map.as_mut_slice()[..n].copy_from_slice(&pixels[..n]);
-            slot.busy = true;
-        }
-        let buffer = self.slots[i].buffer;
-        self.conn.send(Req::new(w.surface, 1).u32(buffer).i32(0).i32(0))?;
-        self.conn.send(Req::new(w.surface, 9).i32(0).i32(0).i32(i32::MAX).i32(i32::MAX))?;
-        self.conn.send(Req::new(w.surface, 6))?;
-        if let Some(about) = self.about.as_mut() {
-            about.shown = buffer;
-        }
-        Ok(())
     }
 
     fn destroy_mirror_window(&mut self) -> io::Result<()> {
@@ -1484,14 +1299,16 @@ impl App {
             (st.quit, st.selecting, st.showing, st.frame.clone(), repin, st.show_about)
         };
         if quit {
+            crate::about::dismiss();
             return Ok(false);
         }
-        if show_about && self.about.is_none() {
-            eprintln!("screenmirror: opening about window");
+        if show_about {
+            eprintln!("screenmirror: opening about dialog");
             for line in crate::about::lines() {
                 eprintln!("screenmirror: {line}");
             }
-            self.about = Some(self.create_about()?);
+            crate::about::open();
+            self.shared.update(|st| st.show_about = false);
         }
         if !showing {
             let had = self.mirror.is_some() || self.selection.is_some();
@@ -1542,6 +1359,7 @@ impl App {
         self.reconfigure_outputs()?;
         let mut wake = std::fs::File::from(wake);
         loop {
+            crate::about::reap();
             // Re-read the panel config even when outputs are unchanged, so dragging
             // the toolbar to the other screen flips source and target.
             self.reconfigure_outputs()?;
@@ -1656,24 +1474,21 @@ plugin=org.kde.plasma.folder
     }
 
     #[test]
-    fn esc_closes_about_only_when_that_window_is_focused() {
+    fn esc_cancels_a_selection_and_does_not_quit() {
         use super::{key_action, KeyAction};
-        assert_eq!(key_action(1, true, true, false, false, false), KeyAction::CloseAbout);
-        // Focused Über wins over an active selection, so Esc is not global.
-        assert_eq!(key_action(1, true, true, true, false, false), KeyAction::CloseAbout);
-        assert_eq!(key_action(1, true, false, true, true, false), KeyAction::CancelSelection);
-        assert_eq!(key_action(1, true, false, false, true, false), KeyAction::None);
-        assert_eq!(key_action(1, false, true, true, false, false), KeyAction::None);
+        assert_eq!(key_action(1, true, true, false, false), KeyAction::CancelSelection);
+        assert_eq!(key_action(1, true, false, true, false), KeyAction::None);
+        assert_eq!(key_action(1, false, true, true, false), KeyAction::None);
     }
 
     #[test]
     fn q_and_shift_s_stay_on_the_mirror_window() {
         use super::{key_action, KeyAction, KEY_Q, KEY_S};
-        assert_eq!(key_action(KEY_Q, true, false, false, true, false), KeyAction::StopMirror);
-        assert_eq!(key_action(KEY_Q, true, true, false, false, false), KeyAction::None);
-        assert_eq!(key_action(KEY_S, true, false, false, true, true), KeyAction::SwapOutputs);
-        assert_eq!(key_action(KEY_S, true, true, false, false, true), KeyAction::None);
-        assert_eq!(key_action(KEY_S, true, false, false, true, false), KeyAction::None);
+        assert_eq!(key_action(KEY_Q, true, false, true, false), KeyAction::StopMirror);
+        assert_eq!(key_action(KEY_Q, true, false, false, false), KeyAction::None);
+        assert_eq!(key_action(KEY_S, true, false, true, true), KeyAction::SwapOutputs);
+        assert_eq!(key_action(KEY_S, true, false, false, true), KeyAction::None);
+        assert_eq!(key_action(KEY_S, true, false, true, false), KeyAction::None);
     }
 }
 

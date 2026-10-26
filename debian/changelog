@@ -1,3 +1,11 @@
+screenmirror (0.0.6) unstable; urgency=medium
+
+  * Release 0.0.6.
+  * Open Über with a Qt 6 dialog instead of a window painted by the app.
+    Schließen, Esc, and the frame close dismiss only that dialog.
+
+ -- Torsten Edeler <torsten.edeler@haw-hamburg.de>  Mon, 26 Oct 2026 12:10:00 +0000
+
 screenmirror (0.0.5) unstable; urgency=medium
 
   * Release 0.0.5.

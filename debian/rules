@@ -1,7 +1,8 @@
 #!/usr/bin/make -f
-# std-only Rust. There is no debhelper Cargo buildsystem here, so the
-# release binary is built with the locked lockfile and installed by
-# debian/screenmirror.install.
+# The Rust side is std only. build.rs also compiles the Qt dialog.
+# There is no debhelper Cargo buildsystem here, so the release binary
+# and screenmirror-about are built with the locked lockfile and installed
+# by debian/screenmirror.install.
 
 # Commit shown as Git-ID. A tree without git falls back to the changelog version,
 # then to the same placeholder the About window uses.
