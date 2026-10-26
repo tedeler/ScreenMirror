@@ -1,3 +1,11 @@
+screenmirror (0.0.6) unstable; urgency=medium
+
+  * Release 0.0.6.
+  * Remove the extra close mark drawn on the Über window. The frame close
+    button, the Schließen button, and Esc close only that window.
+
+ -- Torsten Edeler <torsten.edeler@haw-hamburg.de>  Mon, 26 Oct 2026 12:10:00 +0000
+
 screenmirror (0.0.5) unstable; urgency=medium
 
   * Release 0.0.5.

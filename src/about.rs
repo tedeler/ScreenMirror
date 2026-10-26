@@ -2,9 +2,11 @@
 //!
 //! A light client area, an original pair of screens on the left, the four
 //! identity facts in the system sans on the right, and a Schließen button at
-//! the bottom right. The face is fontconfig's `sans` (Plasma uses Noto Sans),
-//! read from the font file when the window opens. Nothing is bundled. A missing
-//! font draws a notice in the same window and does not stop the mirror.
+//! the bottom right. The compositor draws the frame and its close button; this
+//! buffer does not paint another close glyph. The face is fontconfig's `sans`
+//! (Plasma uses Noto Sans), read from the font file when the window opens.
+//! Nothing is bundled. A missing font draws a notice in the same window and
+//! does not stop the mirror.
 
 #[path = "stroke.rs"]
 mod stroke;
@@ -48,10 +50,6 @@ const MUTED: [u8; 4] = [0x62, 0x5C, 0x54, 0xFF];
 const BUTTON_FILL: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 const BUTTON_EDGE: [u8; 4] = [0xA4, 0x9E, 0x96, 0xFF];
 const HAIRLINE: [u8; 4] = [0xD6, 0xD2, 0xCE, 0xFF];
-/// Disc behind the corner ×, still lighter than the ink.
-const CLOSE_DISC: [u8; 4] = [0xE2, 0xDC, 0xD6, 0xFF];
-/// Side of the square close control, in buffer pixels.
-const CLOSE_SIDE: u32 = 40;
 
 const BEZEL: [u8; 4] = [0x4A, 0x3C, 0x2E, 0xFF];
 const SKY: [u8; 4] = [0xE6, 0xC4, 0x8C, 0xFF];
@@ -124,7 +122,6 @@ pub fn render(width: u32, height: u32) -> Vec<u8> {
         None => paint_notice(&mut buf, width, height),
     }
     paint_button(&mut buf, width, height, installed(), placed.button);
-    paint_close(&mut buf, width, height);
     buf
 }
 
@@ -139,24 +136,6 @@ pub fn button_rect(width: u32, height: u32) -> (i32, i32, u32, u32) {
 /// True when `(px, py)` lies on the Schließen button. Coordinates are surface pixels.
 pub fn button_contains(width: u32, height: u32, px: f64, py: f64) -> bool {
     contains_rect(button_rect(width, height), px, py)
-}
-
-/// Square hit target of the corner close control, in buffer pixels.
-/// `(x, y, width, height)`. Empty when the surface is too small to draw one.
-pub fn close_rect(width: u32, height: u32) -> (i32, i32, u32, u32) {
-    if width < 16 || height < 16 {
-        return (0, 0, 0, 0);
-    }
-    let side = CLOSE_SIDE.min(width).min(height);
-    let inset_x = 10.min((width - side) as i32);
-    let inset_y = 10.min((height - side) as i32);
-    let x = width as i32 - side as i32 - inset_x;
-    (x.max(0), inset_y.max(0), side, side)
-}
-
-/// True when `(px, py)` lies in the close control. Coordinates are surface pixels.
-pub fn close_contains(width: u32, height: u32, px: f64, py: f64) -> bool {
-    contains_rect(close_rect(width, height), px, py)
 }
 
 fn contains_rect(rect: (i32, i32, u32, u32), px: f64, py: f64) -> bool {
@@ -769,72 +748,6 @@ fn stroke(
             };
             let t = t.clamp(0.0, 1.0);
             let d = (px - (x0 + t * vx)).hypot(py - (y0 + t * vy));
-            let cov = if d <= radius - edge {
-                1.0
-            } else if d >= radius + edge {
-                0.0
-            } else {
-                (radius + edge - d) / (2.0 * edge)
-            };
-            if cov > 0.0 {
-                ttf::blend(buf, width, height, x, y, color, cov);
-            }
-        }
-    }
-}
-
-fn paint_close(buf: &mut [u8], width: u32, height: u32) {
-    let (x, y, w, h) = close_rect(width, height);
-    if w < 8 || h < 8 {
-        return;
-    }
-    let cx = x as f32 + w as f32 * 0.5;
-    let cy = y as f32 + h as f32 * 0.5;
-    let disc_r = w.min(h) as f32 * 0.46;
-    paint_disc(buf, width, height, cx, cy, disc_r, CLOSE_DISC);
-    let arm = w.min(h) as f32 * 0.28;
-    let radius = (w.min(h) as f32 * 0.075).max(1.6);
-    stroke(
-        buf,
-        width,
-        height,
-        cx - arm,
-        cy - arm,
-        cx + arm,
-        cy + arm,
-        radius,
-        INK,
-    );
-    stroke(
-        buf,
-        width,
-        height,
-        cx + arm,
-        cy - arm,
-        cx - arm,
-        cy + arm,
-        radius,
-        INK,
-    );
-}
-
-fn paint_disc(
-    buf: &mut [u8],
-    width: u32,
-    height: u32,
-    cx: f32,
-    cy: f32,
-    radius: f32,
-    color: [u8; 4],
-) {
-    let edge = 0.85;
-    let minx = (cx - radius - edge - 1.0).floor() as i32;
-    let maxx = (cx + radius + edge + 1.0).ceil() as i32;
-    let miny = (cy - radius - edge - 1.0).floor() as i32;
-    let maxy = (cy + radius + edge + 1.0).ceil() as i32;
-    for y in miny..=maxy {
-        for x in minx..=maxx {
-            let d = (x as f32 + 0.5 - cx).hypot(y as f32 + 0.5 - cy);
             let cov = if d <= radius - edge {
                 1.0
             } else if d >= radius + edge {
@@ -1471,60 +1384,41 @@ mod tests {
             x as f64 + bw as f64 * 0.5,
             y as f64 + bh as f64 * 0.5
         ));
-        assert!(!close_contains(
-            w,
-            h,
-            x as f64 + 4.0,
-            y as f64 + bh as f64 * 0.5
-        ));
-        let (kx, ky, kw, kh) = close_rect(w, h);
-        assert!(!button_contains(
-            w,
-            h,
-            kx as f64 + kw as f64 * 0.5,
-            ky as f64 + kh as f64 * 0.5
-        ));
         assert!(!button_contains(w, h, f64::NAN, 0.0));
+        assert!(!button_contains(w, h, 20.0, 20.0));
         assert_eq!(button_rect(0, 0), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn client_buffer_does_not_draw_a_corner_close() {
+        let (w, h) = content_size();
+        let buf = render(w, h);
+        // The removed control was a 40px square, inset 10px from the top-right.
+        let side = 40i32;
+        let x0 = w as i32 - side - 10;
+        let y0 = 10i32;
+        let sum = |px: i32, py: i32| {
+            let i = ((py as u32 * w + px as u32) * 4) as usize;
+            buf[i] as u16 + buf[i + 1] as u16 + buf[i + 2] as u16
+        };
+        let mut dark = 0u32;
+        for y in y0..y0 + side {
+            for x in x0..x0 + side {
+                if sum(x, y) < 400 {
+                    dark += 1;
+                }
+            }
+        }
+        assert_eq!(dark, 0, "no close glyph in the top-right of the client buffer");
+        let cx = x0 + side / 2;
+        let cy = y0 + side / 2;
+        assert!(sum(cx, cy) > 600, "top-right stays the light surface");
+        assert!(!button_contains(w, h, cx as f64, cy as f64));
     }
 
     #[test]
     fn window_title_names_screenmirror() {
         assert_eq!(WINDOW_TITLE, "Über ScreenMirror");
-    }
-
-    #[test]
-    fn close_control_is_a_cross_in_the_top_right() {
-        let (w, h) = content_size();
-        let (x, y, bw, bh) = close_rect(w, h);
-        assert!(bw >= 16 && bh >= 16, "close control {bw}x{bh}");
-        assert!(x as u32 > w / 2, "close control stays on the right, x {x}");
-        assert!(y < 24, "close control stays in the top corner, y {y}");
-        assert!(x as u32 + bw < w, "inset from the hairline");
-        let buf = render(w, h);
-        let sum = |px: i32, py: i32| {
-            let i = ((py as u32 * w + px as u32) * 4) as usize;
-            buf[i] as u16 + buf[i + 1] as u16 + buf[i + 2] as u16
-        };
-        let cx = x + bw as i32 / 2;
-        let cy = y + bh as i32 / 2;
-        assert!(sum(cx, cy) < 250, "crossing of the × should be dark");
-        // Both arms of the ×, inside the stroke, not only the center pixel.
-        for (dx, dy) in [(5, 5), (-5, -5), (5, -5), (-5, 5)] {
-            assert!(
-                sum(cx + dx, cy + dy) < 250,
-                "arm at {dx},{dy} sum {}",
-                sum(cx + dx, cy + dy)
-            );
-        }
-        // Straight above the crossing is the disc, so the mark is a cross.
-        assert!(sum(cx, cy - 14) > 400, "disc above the × stays light");
-        assert!(close_contains(w, h, cx as f64, cy as f64));
-        assert!(close_contains(w, h, x as f64, y as f64));
-        assert!(!close_contains(w, h, x as f64 + bw as f64, cy as f64));
-        assert!(!close_contains(w, h, 20.0, 30.0));
-        assert!(!close_contains(w, h, f64::NAN, 0.0));
-        assert_eq!(close_rect(0, 0), (0, 0, 0, 0));
     }
 
     #[test]
