@@ -10,7 +10,7 @@ Mirror the screen that holds the KDE panel onto the other screen, on Plasma (Way
 
 **Keine Spiegelung** removes the mirror and leaves the process and the tray running, the same as pressing Q while the mirror window is focused. **Auf diese Arbeitsfläche** moves the current mirror onto the virtual desktop that is current when the item is chosen, keeping the mode and any zoom region. If mirroring is off, that item starts Full on the current desktop.
 
-**Über** opens a window in this process (a normal Wayland toplevel, not a browser). It shows the author, the package version, the git commit the binary was built from, and the build date, set in the system sans-serif (fontconfig's `sans`, read from that font file at runtime). The corner ×, Esc while that window is focused, or the frame's close button closes it. The mirror and the tray keep running.
+**Über** opens a window in this process (a normal Wayland toplevel, not a browser). The frame title is „Über ScreenMirror“. An illustration of two screens sits on the left. On the right, in the system sans-serif (fontconfig's `sans`, read from that font file at runtime), are the author, the package version, the git commit the binary was built from, and the build date. The corner ×, the Schließen button, Esc while that window is focused, or the frame's close button closes it. The mirror and the tray keep running.
 
 Written in Rust using only the standard library.
 
@@ -21,7 +21,7 @@ Written in Rust using only the standard library.
 - `SCREENMIRROR_GIT_ID` — commit id. When it is set and non-empty, it wins over `git rev-parse HEAD`. `debian/rules` sets it from `git rev-parse HEAD`, or from the version in `debian/changelog` when that command fails. GitHub Actions sets it from `GITHUB_SHA`. If neither the variable nor git works, the window shows `unbekannt`.
 - `SOURCE_DATE_EPOCH` — Unix timestamp used as the build date, formatted as UTC `YYYY-MM-DD` (reproducible builds). When it is unset, the date is the current UTC date. If it is set but not an integer, or the clock cannot be read, the window shows `unbekannt`.
 
-The package version is `Cargo.toml`'s `version` (`0.0.4`). `debian/changelog` uses the same version. A missing git checkout or an offline build still compiles.
+The package version is `Cargo.toml`'s `version` (`0.0.5`). `debian/changelog` uses the same version. A missing git checkout or an offline build still compiles.
 
 ## Requirements
 
@@ -37,12 +37,12 @@ cargo build --release
 
 ## Releases
 
-Pushing a version tag (`v*`, for example `v0.0.4`) runs GitHub Actions: it tests, builds a Linux x86_64 release binary and the Debian package from `debian/`, and publishes a GitHub Release with
+Pushing a version tag (`v*`, for example `v0.0.5`) runs GitHub Actions: it tests, builds a Linux x86_64 release binary and the Debian package from `debian/`, and publishes a GitHub Release with
 `screenmirror-<tag>-x86_64-unknown-linux-gnu.tar.gz` and `screenmirror_<version>_amd64.deb` attached. Pull requests and pushes to `main` also build the `.deb` as a CI artifact.
 
 ```sh
-git tag v0.0.4
-git push origin v0.0.4
+git tag v0.0.5
+git push origin v0.0.5
 ```
 
 ## Debian package
@@ -52,10 +52,10 @@ git push origin v0.0.4
 ```sh
 sudo apt install dpkg-dev debhelper cargo rustc
 dpkg-buildpackage -us -uc
-sudo apt install ../screenmirror_0.0.4_amd64.deb
+sudo apt install ../screenmirror_0.0.5_amd64.deb
 ```
 
-The build runs `cargo build --locked --release`. The `.deb` is written next to the source tree (one directory up). Its name follows `debian/changelog` and the host architecture (`screenmirror_0.0.4_amd64.deb` on amd64). It installs:
+The build runs `cargo build --locked --release`. The `.deb` is written next to the source tree (one directory up). Its name follows `debian/changelog` and the host architecture (`screenmirror_0.0.5_amd64.deb` on amd64). It installs:
 
 - `/usr/bin/screenmirror`, the release binary.
 - `/usr/share/applications/screenmirror.desktop`, the entry KWin matches to allow `org.kde.KWin.ScreenShot2`. `Exec=/usr/bin/screenmirror` is a normal launch.

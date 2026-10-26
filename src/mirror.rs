@@ -13,7 +13,8 @@
 //!   shows a dimmed freeze-frame; drag with the left button to select,
 //!   Esc / right click cancels. Esc while the Über window is focused closes
 //!   that window instead, and is not a global shortcut.
-//! * The Über window draws its own ×. Clicking it closes only that window.
+//! * The Über window draws its own × and a Schließen button. Either click closes
+//!   only that window.
 //!   When the compositor offers `zxdg_decoration_manager_v1`, the window also
 //!   asks for server-side decorations so the frame can show a close button.
 //! * Q unmaps the mirror when that window has keyboard focus, and leaves the process up.
@@ -785,8 +786,12 @@ impl App {
             }
             3 => {
                 let (_serial, _time, button, state) = (a.u32(), a.u32(), a.u32(), a.u32());
+                if button == BTN_LEFT && state == 1 && self.pointer_on_about_button() {
+                    eprintln!("screenmirror: Schließen button");
+                    return self.close_about();
+                }
                 if button == BTN_LEFT && state == 1 && self.pointer_on_about_close() {
-                    eprintln!("screenmirror: about close button");
+                    eprintln!("screenmirror: about corner close");
                     return self.close_about();
                 }
                 let on_selection = self
@@ -813,17 +818,20 @@ impl App {
         Ok(())
     }
 
-    fn pointer_on_about_close(&self) -> bool {
-        let Some(about) = self.about.as_ref() else { return false };
+    fn about_pointer(&self) -> Option<(u32, u32, f64, f64)> {
+        let about = self.about.as_ref()?;
         if self.pointer_surface != Some(about.surface) || about.width <= 0 || about.height <= 0 {
-            return false;
+            return None;
         }
-        crate::about::close_contains(
-            about.width as u32,
-            about.height as u32,
-            self.pointer_x,
-            self.pointer_y,
-        )
+        Some((about.width as u32, about.height as u32, self.pointer_x, self.pointer_y))
+    }
+
+    fn pointer_on_about_close(&self) -> bool {
+        self.about_pointer().is_some_and(|(w, h, x, y)| crate::about::close_contains(w, h, x, y))
+    }
+
+    fn pointer_on_about_button(&self) -> bool {
+        self.about_pointer().is_some_and(|(w, h, x, y)| crate::about::button_contains(w, h, x, y))
     }
 
     fn output_id(&self, name: &str) -> Option<u32> {
@@ -1045,7 +1053,7 @@ impl App {
         let toplevel = self.conn.new_id();
         self.objects.insert(toplevel, Obj::XdgToplevel(surface));
         self.conn.send(Req::new(xdg, 1).u32(toplevel))?;
-        self.conn.send(Req::new(toplevel, 2).string("Über"))?;
+        self.conn.send(Req::new(toplevel, 2).string(crate::about::WINDOW_TITLE))?;
         self.conn.send(Req::new(toplevel, 3).string("screenmirror"))?;
         self.conn.send(Req::new(toplevel, 8).i32(w).i32(h))?;
         self.conn.send(Req::new(toplevel, 7).i32(w).i32(h))?;
@@ -1090,7 +1098,7 @@ impl App {
     }
 
     /// Drops the Über window only. The mirror, the tray, and the process stay up.
-    /// The xdg close event and the in-window × both end here.
+    /// The xdg close event, the in-window ×, and Schließen all end here.
     fn close_about(&mut self) -> io::Result<()> {
         if let Some(w) = self.about.take() {
             if self.keyboard_focus == Some(w.surface) {

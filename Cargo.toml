@@ -1,6 +1,6 @@
 [package]
 name = "screenmirror"
-version = "0.0.4"
+version = "0.0.5"
 edition = "2021"
 description = "Mirror the laptop screen onto a second screen on KDE Plasma (Wayland), with a system tray menu"
 license = "MIT"
