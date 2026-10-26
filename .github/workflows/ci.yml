@@ -15,7 +15,10 @@ env:
 jobs:
   build-and-test:
     name: Build and test
-    runs-on: ubuntu-latest
+    # ubuntu-latest was still Ubuntu 24.04 during the Oct–Nov 2026 migration.
+    # A 24.04 build links Qt 6.x from that release and emits t64 dependency
+    # names Kubuntu 26.04 does not ship. Pin the guest's release.
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,7 +33,8 @@ jobs:
 
   debian-package:
     name: Debian package
-    runs-on: ubuntu-latest
+    # Same pin as the test job: shlibs must be generated on Ubuntu 26.04.
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

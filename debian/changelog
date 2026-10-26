@@ -1,3 +1,11 @@
+screenmirror (0.0.7) unstable; urgency=medium
+
+  * Release 0.0.7.
+  * Build the Debian package on Ubuntu 26.04, the same release as
+    Kubuntu 26.04, so shlibs:Depends names Qt packages that exist there.
+
+ -- Torsten Edeler <torsten.edeler@haw-hamburg.de>  Mon, 26 Oct 2026 13:00:00 +0000
+
 screenmirror (0.0.6) unstable; urgency=medium
 
   * Release 0.0.6.
