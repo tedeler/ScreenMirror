@@ -1,7 +1,7 @@
-screenmirror (0.1.0) unstable; urgency=medium
+screenmirror (0.0.2) unstable; urgency=medium
 
   * Initial Debian package.
   * Install /usr/bin/screenmirror, the KWin ScreenShot2 desktop entry,
     and a Plasma autostart entry that launches with --no-mirror.
 
- -- Torsten Edeler <torsten.edeler@haw-hamburg.de>  Sun, 25 Oct 2026 19:27:49 +0000
+ -- Torsten Edeler <torsten.edeler@haw-hamburg.de>  Mon, 26 Oct 2026 07:42:00 +0000

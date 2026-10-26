@@ -26,24 +26,25 @@ cargo build --release
 
 ## Releases
 
-Pushing a version tag (`v*`, for example `v0.1.0`) runs GitHub Actions: it tests, builds a Linux x86_64 release binary, and publishes a GitHub Release with
-`screenmirror-<tag>-x86_64-unknown-linux-gnu.tar.gz` attached.
+Pushing a version tag (`v*`, for example `v0.0.2`) runs GitHub Actions: it tests, builds a Linux x86_64 release binary and the Debian package from `debian/`, and publishes a GitHub Release with
+`screenmirror-<tag>-x86_64-unknown-linux-gnu.tar.gz` and `screenmirror_<version>_amd64.deb` attached. Pull requests and pushes to `main` also build the `.deb` as a CI artifact.
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.0.2
+git push origin v0.0.2
 ```
 
 ## Debian package
 
-`debian/` is a source package. With `dpkg-dev`, `debhelper`, `rustc`, and `cargo` installed:
+`debian/` is a source package. Build it locally the same way CI does:
 
 ```sh
+sudo apt install dpkg-dev debhelper cargo rustc
 dpkg-buildpackage -us -uc
-sudo apt install ../screenmirror_0.1.0_amd64.deb
+sudo apt install ../screenmirror_0.0.2_amd64.deb
 ```
 
-The build runs `cargo build --locked --release`. The `.deb` name follows `debian/changelog` and the host architecture (`screenmirror_0.1.0_amd64.deb` on amd64). It installs:
+The build runs `cargo build --locked --release`. The `.deb` is written next to the source tree (one directory up). Its name follows `debian/changelog` and the host architecture (`screenmirror_0.0.2_amd64.deb` on amd64). It installs:
 
 - `/usr/bin/screenmirror`, the release binary.
 - `/usr/share/applications/screenmirror.desktop`, the entry KWin matches to allow `org.kde.KWin.ScreenShot2`. `Exec=/usr/bin/screenmirror` is a normal launch.
