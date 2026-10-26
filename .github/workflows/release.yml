@@ -15,7 +15,10 @@ env:
 jobs:
   release:
     name: Build and publish
-    runs-on: ubuntu-latest
+    # ubuntu-latest was still Ubuntu 24.04 during the Oct–Nov 2026 migration.
+    # The tarball and the .deb must be built on Ubuntu 26.04 so they link
+    # Kubuntu 26.04's Qt and depend on package names that release ships.
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

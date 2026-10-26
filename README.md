@@ -21,7 +21,7 @@ The Rust side uses only the standard library. The dialog is a small C++ program 
 - `SCREENMIRROR_GIT_ID` — commit id. When it is set and non-empty, it wins over `git rev-parse HEAD`. `debian/rules` sets it from `git rev-parse HEAD`, or from the version in `debian/changelog` when that command fails. GitHub Actions sets it from `GITHUB_SHA`. If neither the variable nor git works, the window shows `unbekannt`.
 - `SOURCE_DATE_EPOCH` — Unix timestamp used as the build date, formatted as UTC `YYYY-MM-DD` (reproducible builds). When it is unset, the date is the current UTC date. If it is set but not an integer, or the clock cannot be read, the window shows `unbekannt`.
 
-The package version is `Cargo.toml`'s `version` (`0.0.6`). `debian/changelog` uses the same version. A missing git checkout or an offline build still compiles.
+The package version is `Cargo.toml`'s `version` (`0.0.7`). `debian/changelog` uses the same version. A missing git checkout or an offline build still compiles.
 
 ## Requirements
 
@@ -37,12 +37,12 @@ cargo build --release
 
 ## Releases
 
-Pushing a version tag (`v*`, for example `v0.0.6`) runs GitHub Actions: it tests, builds a Linux x86_64 release binary and the Debian package from `debian/`, and publishes a GitHub Release with
-`screenmirror-<tag>-x86_64-unknown-linux-gnu.tar.gz` and `screenmirror_<version>_amd64.deb` attached. Pull requests and pushes to `main` also build the `.deb` as a CI artifact.
+Pushing a version tag (`v*`, for example `v0.0.7`) runs GitHub Actions on `ubuntu-26.04`: it tests, builds a Linux x86_64 release binary and the Debian package from `debian/`, and publishes a GitHub Release with
+`screenmirror-<tag>-x86_64-unknown-linux-gnu.tar.gz` and `screenmirror_<version>_amd64.deb` attached. Pull requests and pushes to `main` also build the `.deb` as a CI artifact on `ubuntu-26.04`. The package is built on that release so `shlibs:Depends` names Qt libraries Kubuntu 26.04 ships.
 
 ```sh
-git tag v0.0.6
-git push origin v0.0.6
+git tag v0.0.7
+git push origin v0.0.7
 ```
 
 ## Debian package
@@ -52,10 +52,10 @@ git push origin v0.0.6
 ```sh
 sudo apt install dpkg-dev debhelper cargo rustc g++ pkg-config qt6-base-dev
 dpkg-buildpackage -us -uc
-sudo apt install ../screenmirror_0.0.6_amd64.deb
+sudo apt install ../screenmirror_0.0.7_amd64.deb
 ```
 
-The build runs `cargo build --locked --release`. The `.deb` is written next to the source tree (one directory up). Its name follows `debian/changelog` and the host architecture (`screenmirror_0.0.6_amd64.deb` on amd64). It installs:
+Build the package on Ubuntu 26.04, the same release as Kubuntu 26.04. The build runs `cargo build --locked --release`. The `.deb` is written next to the source tree (one directory up). Its name follows `debian/changelog` and the host architecture (`screenmirror_0.0.7_amd64.deb` on amd64). It installs:
 
 - `/usr/bin/screenmirror`, the release binary.
 - `/usr/libexec/screenmirror-about`, the Qt dialog Über launches.
