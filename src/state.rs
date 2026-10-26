@@ -54,6 +54,9 @@ pub struct State {
     /// Destroy and recreate the mirror window so it lands on the virtual desktop
     /// that is current when the flag is set.
     pub repin: bool,
+    /// Tray asked for the Über window. The display thread clears this when that
+    /// window's close button is used. It does not stop the mirror.
+    pub show_about: bool,
     pub quit: bool,
     /// Output name (e.g. "eDP-1") to capture.
     pub source: Option<String>,
@@ -87,6 +90,7 @@ impl Shared {
                 showing,
                 keep_aspect: true,
                 repin: false,
+                show_about: false,
                 quit: false,
                 source: None,
                 want_frame: true,

@@ -10,7 +10,18 @@ Mirror the screen that holds the KDE panel onto the other screen, on Plasma (Way
 
 **Keine Spiegelung** removes the mirror and leaves the process and the tray running, the same as pressing Q while the mirror window is focused. **Auf diese Arbeitsfläche** moves the current mirror onto the virtual desktop that is current when the item is chosen, keeping the mode and any zoom region. If mirroring is off, that item starts Full on the current desktop.
 
+**Über** opens a window in this process (a normal Wayland toplevel, not a browser). It shows the author, the package version, the git commit the binary was built from, and the build date. Closing that window leaves the mirror and the tray running.
+
 Written in Rust using only the standard library.
+
+## Build identity
+
+`build.rs` compiles three strings into the binary. The Über window shows them; the process does not shell out to discover them.
+
+- `SCREENMIRROR_GIT_ID` — commit id. When it is set and non-empty, it wins over `git rev-parse HEAD`. `debian/rules` sets it from `git rev-parse HEAD`, or from the version in `debian/changelog` when that command fails. GitHub Actions sets it from `GITHUB_SHA`. If neither the variable nor git works, the window shows `unbekannt`.
+- `SOURCE_DATE_EPOCH` — Unix timestamp used as the build date, formatted as UTC `YYYY-MM-DD` (reproducible builds). When it is unset, the date is the current UTC date. If it is set but not an integer, or the clock cannot be read, the window shows `unbekannt`.
+
+The package version is `Cargo.toml`'s `version` (`0.1.0`). `debian/changelog` uses the same version. A missing git checkout or an offline build still compiles.
 
 ## Requirements
 
@@ -72,7 +83,7 @@ Capture is one `org.kde.KWin.ScreenShot2.CaptureScreen` call per frame. KWin wri
 
 Frames live in `wl_shm` buffers. With aspect kept, the toplevel is a 1×1 black buffer stretched to the output, and a centered `wl_subsurface` uses `wp_viewporter` to scale the whole frame (or, in Zoom, the chosen rectangle) so it fits. The compositor scales; the unused area is the black parent, and the source is not cropped. With aspect ignored, `wp_viewporter` stretches that same buffer to the output size. Black mode attaches only the 1×1 black buffer. The window is an `xdg_toplevel` sent `set_fullscreen` for the target output. A layer-shell overlay would be shown on every virtual desktop, so the mirror is not one. Q is a normal key on that window: it stops the mirror only when the window has keyboard focus. An older build registered Q with KGlobalAccel; this one removes that registration on startup so the letter works again in the rest of the session.
 
-The tray icon is an `org.kde.StatusNotifierItem`. Its context menu is `com.canonical.dbusmenu`, with radio items for the three modes and for **Keine Spiegelung**, a checkmark for **Seitenverhältnis behalten**, and an action **Auf diese Arbeitsfläche**. Choosing Zoom opens a dimmed overlay on the primary screen; drag with the left button to pick the region, or press Esc or the right button to cancel. While the mirror is stopped, **Keine Spiegelung** is checked and none of the three modes is.
+The tray icon is an `org.kde.StatusNotifierItem`. Its context menu is `com.canonical.dbusmenu`, with radio items for the three modes and for **Keine Spiegelung**, a checkmark for **Seitenverhältnis behalten**, and actions **Auf diese Arbeitsfläche** and **Über**. Choosing Zoom opens a dimmed overlay on the primary screen; drag with the left button to pick the region, or press Esc or the right button to cancel. While the mirror is stopped, **Keine Spiegelung** is checked and none of the three modes is.
 
 ## Test VM
 

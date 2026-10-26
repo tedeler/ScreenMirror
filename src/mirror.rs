@@ -14,6 +14,7 @@
 //!   Esc / right click cancels.
 //! * Q unmaps the mirror when that window has keyboard focus, and leaves the process up.
 //!   It is not a global shortcut, so Q still types everywhere else.
+//! * Über is a separate xdg toplevel. Its close button destroys only that window.
 
 use std::collections::HashMap;
 use std::io::{self, Read};
@@ -98,6 +99,20 @@ struct XdgWin {
     shown: u32,
 }
 
+/// Normal (not fullscreen) toplevel for the Über window.
+#[derive(Clone, Copy)]
+struct AboutWin {
+    surface: u32,
+    xdg: u32,
+    toplevel: u32,
+    configured: bool,
+    width: i32,
+    height: i32,
+    pending_w: i32,
+    pending_h: i32,
+    shown: u32,
+}
+
 #[derive(Clone, Copy)]
 struct LayerSurf {
     surface: u32,
@@ -158,6 +173,7 @@ pub struct App {
     slots: Vec<Slot>,
     black: Option<Slot>,
     mirror: Option<XdgWin>,
+    about: Option<AboutWin>,
     drawn: Drawn,
     selection: Option<Selection>,
     selection_wait_seq: Option<u64>,
@@ -287,6 +303,7 @@ impl App {
             slots: Vec::new(),
             black: None,
             mirror: None,
+            about: None,
             drawn: Drawn::Nothing,
             selection: None,
             selection_wait_seq: None,
@@ -549,16 +566,41 @@ impl App {
                     if h > 0 {
                         m.pending_h = h;
                     }
+                } else if let Some(about) = self.about.as_mut().filter(|m| m.surface == surface) {
+                    if w > 0 {
+                        about.pending_w = w;
+                    }
+                    if h > 0 {
+                        about.pending_h = h;
+                    }
                 }
             }
             (Obj::XdgToplevel(surface), 1) => {
                 if self.mirror.as_ref().is_some_and(|m| m.surface == surface) {
                     eprintln!("screenmirror: compositor closed the mirror window");
                     self.stop_mirror()?;
+                } else if self.about.as_ref().is_some_and(|m| m.surface == surface) {
+                    eprintln!("screenmirror: compositor closed the about window");
+                    self.close_about()?;
                 }
             }
             (Obj::XdgSurface(surface), 0) => {
                 let serial = a.u32();
+                if self.about.as_ref().is_some_and(|m| m.surface == surface) {
+                    let (xdg, width, height) = {
+                        let pref = crate::about::content_size();
+                        let m = self.about.as_mut().unwrap();
+                        let w = if m.pending_w > 0 { m.pending_w } else { pref.0 as i32 };
+                        let h = if m.pending_h > 0 { m.pending_h } else { pref.1 as i32 };
+                        m.configured = true;
+                        (m.width, m.height) = (w.max(1), h.max(1));
+                        (m.xdg, m.width, m.height)
+                    };
+                    self.conn.send(Req::new(xdg, 3).i32(0).i32(0).i32(width).i32(height))?;
+                    self.conn.send(Req::new(xdg, 4).u32(serial))?;
+                    self.draw_about()?;
+                    return Ok(());
+                }
                 if self.mirror.as_ref().is_none_or(|m| m.surface != surface) {
                     self.conn.send(Req::new(ev.obj, 4).u32(serial))?;
                     return Ok(());
@@ -809,6 +851,77 @@ impl App {
         self.conn.send(Req::new(w.xdg, 0))?;
         self.conn.send(Req::new(w.viewport, 0))?;
         self.conn.send(Req::new(w.surface, 0))
+    }
+
+    fn create_about(&mut self) -> io::Result<AboutWin> {
+        let (w, h) = crate::about::content_size();
+        let (w, h) = (w as i32, h as i32);
+        let surface = self.conn.new_id();
+        self.conn.send(Req::new(self.g.compositor, 0).u32(surface))?;
+        let xdg = self.conn.new_id();
+        self.objects.insert(xdg, Obj::XdgSurface(surface));
+        self.conn.send(Req::new(self.g.wm_base, 2).u32(xdg).u32(surface))?;
+        let toplevel = self.conn.new_id();
+        self.objects.insert(toplevel, Obj::XdgToplevel(surface));
+        self.conn.send(Req::new(xdg, 1).u32(toplevel))?;
+        self.conn.send(Req::new(toplevel, 2).string("Über"))?;
+        self.conn.send(Req::new(toplevel, 3).string("screenmirror"))?;
+        self.conn.send(Req::new(toplevel, 8).i32(w).i32(h))?;
+        self.conn.send(Req::new(toplevel, 7).i32(w).i32(h))?;
+        self.conn.send(Req::new(surface, 6))?;
+        Ok(AboutWin {
+            surface,
+            xdg,
+            toplevel,
+            configured: false,
+            width: w,
+            height: h,
+            pending_w: 0,
+            pending_h: 0,
+            shown: 0,
+        })
+    }
+
+    fn destroy_about(&mut self, w: AboutWin) -> io::Result<()> {
+        self.objects.remove(&w.toplevel);
+        self.objects.remove(&w.xdg);
+        self.conn.send(Req::new(w.toplevel, 0))?;
+        self.conn.send(Req::new(w.xdg, 0))?;
+        self.conn.send(Req::new(w.surface, 0))
+    }
+
+    /// Drops the Über window only. The mirror, the tray, and the process stay up.
+    fn close_about(&mut self) -> io::Result<()> {
+        if let Some(w) = self.about.take() {
+            self.destroy_about(w)?;
+        }
+        self.shared.update(|st| st.show_about = false);
+        Ok(())
+    }
+
+    fn draw_about(&mut self) -> io::Result<()> {
+        let Some(w) = self.about.as_ref().copied() else { return Ok(()) };
+        if !w.configured || w.width <= 0 || w.height <= 0 {
+            return Ok(());
+        }
+        let (width, height) = (w.width as u32, w.height as u32);
+        let stride = width.saturating_mul(4);
+        let pixels = crate::about::render(width, height);
+        let i = self.slot_for(width, height, stride, w.shown)?;
+        {
+            let slot = &mut self.slots[i];
+            let n = slot.map.as_mut_slice().len().min(pixels.len());
+            slot.map.as_mut_slice()[..n].copy_from_slice(&pixels[..n]);
+            slot.busy = true;
+        }
+        let buffer = self.slots[i].buffer;
+        self.conn.send(Req::new(w.surface, 1).u32(buffer).i32(0).i32(0))?;
+        self.conn.send(Req::new(w.surface, 9).i32(0).i32(0).i32(i32::MAX).i32(i32::MAX))?;
+        self.conn.send(Req::new(w.surface, 6))?;
+        if let Some(about) = self.about.as_mut() {
+            about.shown = buffer;
+        }
+        Ok(())
     }
 
     fn destroy_mirror_window(&mut self) -> io::Result<()> {
@@ -1151,13 +1264,20 @@ impl App {
 
     /// Reacts to changes made by the tray / capture threads.
     fn sync_state(&mut self) -> io::Result<bool> {
-        let (quit, selecting, showing, frame, repin) = {
+        let (quit, selecting, showing, frame, repin, show_about) = {
             let mut st = self.shared.state.lock().unwrap();
             let repin = std::mem::take(&mut st.repin);
-            (st.quit, st.selecting, st.showing, st.frame.clone(), repin)
+            (st.quit, st.selecting, st.showing, st.frame.clone(), repin, st.show_about)
         };
         if quit {
             return Ok(false);
+        }
+        if show_about && self.about.is_none() {
+            eprintln!("screenmirror: opening about window");
+            for line in crate::about::lines() {
+                eprintln!("screenmirror: {line}");
+            }
+            self.about = Some(self.create_about()?);
         }
         if !showing {
             let had = self.mirror.is_some() || self.selection.is_some();
