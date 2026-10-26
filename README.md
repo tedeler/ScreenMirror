@@ -10,7 +10,7 @@ Mirror the screen that holds the KDE panel onto the other screen, on Plasma (Way
 
 **Keine Spiegelung** removes the mirror and leaves the process and the tray running, the same as pressing Q while the mirror window is focused. **Auf diese Arbeitsfläche** moves the current mirror onto the virtual desktop that is current when the item is chosen, keeping the mode and any zoom region. If mirroring is off, that item starts Full on the current desktop.
 
-**Über** opens a window in this process (a normal Wayland toplevel, not a browser). It shows the author, the package version, the git commit the binary was built from, and the build date. Closing that window leaves the mirror and the tray running.
+**Über** opens a window in this process (a normal Wayland toplevel, not a browser). It shows the author, the package version, the git commit the binary was built from, and the build date, set in the system sans-serif (fontconfig's `sans`, read from that font file at runtime). Closing that window leaves the mirror and the tray running.
 
 Written in Rust using only the standard library.
 
