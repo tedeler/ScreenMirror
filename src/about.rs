@@ -1,0 +1,231 @@
+//! Text for the Über window, and a built-in 5×7 bitmap font to draw it.
+//!
+//! Values come from the compiler environment set by `build.rs`. Nothing here
+//! shells out, so the running process does not need git or a clock.
+
+/// Glyph scale. 5×7 at this scale is large enough to read in a full-desktop screenshot.
+const SCALE: u32 = 4;
+const GLYPH_W: u32 = 5;
+const GLYPH_H: u32 = 7;
+const GAP_X: u32 = 4;
+const GAP_Y: u32 = 20;
+const PAD_X: u32 = 36;
+const PAD_Y: u32 = 36;
+const BORDER: u32 = 8;
+
+/// XRGB8888, little-endian byte order B, G, R, X.
+const BG: [u8; 4] = [0xEC, 0xF3, 0xF8, 0xFF];
+const FG: [u8; 4] = [0x1C, 0x18, 0x16, 0xFF];
+const EDGE: [u8; 4] = [0x6E, 0x46, 0x1E, 0xFF];
+
+pub fn lines() -> [&'static str; 4] {
+    [
+        "Autor: Cursor + Edeler",
+        concat!("Version: ", env!("CARGO_PKG_VERSION")),
+        concat!("Git-ID: ", env!("SCREENMIRROR_GIT_ID")),
+        concat!("Baudatum: ", env!("SCREENMIRROR_BUILD_DATE")),
+    ]
+}
+
+/// Preferred toplevel size in logical pixels (buffer scale 1).
+pub fn content_size() -> (u32, u32) {
+    let cols = lines().iter().map(|s| s.chars().count()).max().unwrap_or(1) as u32;
+    let text_w = cols * GLYPH_W * SCALE + cols.saturating_sub(1) * GAP_X;
+    let rows = 4u32;
+    let text_h = rows * GLYPH_H * SCALE + (rows - 1) * GAP_Y;
+    (text_w + PAD_X * 2, text_h + PAD_Y * 2)
+}
+
+/// Renders the four lines into an XRGB8888 buffer of `width`×`height`.
+/// The block is centered. Pixels that fall outside the buffer are clipped.
+pub fn render(width: u32, height: u32) -> Vec<u8> {
+    let mut buf = vec![0u8; width as usize * height as usize * 4];
+    if width == 0 || height == 0 {
+        return buf;
+    }
+    for px in buf.chunks_exact_mut(4) {
+        px.copy_from_slice(&BG);
+    }
+    fill_rect(&mut buf, width, height, 0, 0, width, BORDER.min(height), EDGE);
+    fill_rect(&mut buf, width, height, 0, height.saturating_sub(BORDER), width, BORDER, EDGE);
+    fill_rect(&mut buf, width, height, 0, 0, BORDER.min(width), height, EDGE);
+    fill_rect(&mut buf, width, height, width.saturating_sub(BORDER), 0, BORDER, height, EDGE);
+
+    let (cw, ch) = content_size();
+    let ox = if width > cw { (width - cw) / 2 } else { 0 };
+    let oy = if height > ch { (height - ch) / 2 } else { 0 };
+    let line_h = GLYPH_H * SCALE + GAP_Y;
+    for (i, line) in lines().iter().enumerate() {
+        let y = oy + PAD_Y + i as u32 * line_h;
+        let mut x = ox + PAD_X;
+        for ch in line.chars() {
+            blit(&mut buf, width, height, x, y, glyph(ch));
+            x = x.saturating_add(GLYPH_W * SCALE + GAP_X);
+        }
+    }
+    buf
+}
+
+fn fill_rect(buf: &mut [u8], width: u32, height: u32, x: u32, y: u32, w: u32, h: u32, color: [u8; 4]) {
+    if w == 0 || h == 0 || x >= width || y >= height {
+        return;
+    }
+    let x1 = (x + w).min(width);
+    let y1 = (y + h).min(height);
+    for yy in y..y1 {
+        for xx in x..x1 {
+            let i = ((yy * width + xx) * 4) as usize;
+            buf[i..i + 4].copy_from_slice(&color);
+        }
+    }
+}
+
+fn blit(buf: &mut [u8], width: u32, height: u32, x: u32, y: u32, rows: [u8; 7]) {
+    for (row, bits) in rows.iter().enumerate() {
+        for col in 0..GLYPH_W {
+            if bits & (1 << (4 - col)) == 0 {
+                continue;
+            }
+            let px = x + col * SCALE;
+            let py = y + row as u32 * SCALE;
+            fill_rect(buf, width, height, px, py, SCALE, SCALE, FG);
+        }
+    }
+}
+
+/// 5×7 glyphs, bit 4 (0x10) is the leftmost pixel. Missing characters become a box.
+fn glyph(ch: char) -> [u8; 7] {
+    match ch {
+        ' ' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        '!' => [0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04],
+        '"' => [0x0A, 0x0A, 0x0A, 0x00, 0x00, 0x00, 0x00],
+        '#' => [0x0A, 0x1F, 0x0A, 0x0A, 0x1F, 0x0A, 0x00],
+        '+' => [0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00],
+        '-' => [0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00],
+        '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06],
+        '/' => [0x01, 0x02, 0x04, 0x08, 0x10, 0x00, 0x00],
+        '0' => [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
+        '1' => [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        '2' => [0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F],
+        '3' => [0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E],
+        '4' => [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02],
+        '5' => [0x1F, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x1E],
+        '6' => [0x0E, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x0E],
+        '7' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
+        '8' => [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E],
+        '9' => [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E],
+        ':' => [0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00],
+        'A' => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        'B' => [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E],
+        'C' => [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],
+        'D' => [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E],
+        'E' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
+        'F' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
+        'G' => [0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F],
+        'H' => [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        'I' => [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        'J' => [0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C],
+        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
+        'M' => [0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11],
+        'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
+        'O' => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'P' => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
+        'Q' => [0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D],
+        'R' => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
+        'S' => [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],
+        'T' => [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
+        'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A],
+        'X' => [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11],
+        'Y' => [0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04],
+        'Z' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],
+        'a' => [0x00, 0x00, 0x0E, 0x01, 0x0F, 0x11, 0x0F],
+        'b' => [0x10, 0x10, 0x1E, 0x11, 0x11, 0x11, 0x1E],
+        'c' => [0x00, 0x00, 0x0E, 0x10, 0x10, 0x11, 0x0E],
+        'd' => [0x01, 0x01, 0x0F, 0x11, 0x11, 0x11, 0x0F],
+        'e' => [0x00, 0x00, 0x0E, 0x11, 0x1F, 0x10, 0x0E],
+        'f' => [0x06, 0x09, 0x08, 0x1C, 0x08, 0x08, 0x08],
+        'g' => [0x00, 0x0F, 0x11, 0x11, 0x0F, 0x01, 0x0E],
+        'h' => [0x10, 0x10, 0x1E, 0x11, 0x11, 0x11, 0x11],
+        'i' => [0x04, 0x00, 0x0C, 0x04, 0x04, 0x04, 0x0E],
+        'j' => [0x02, 0x00, 0x06, 0x02, 0x02, 0x12, 0x0C],
+        'k' => [0x10, 0x10, 0x12, 0x14, 0x18, 0x14, 0x12],
+        'l' => [0x0C, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        'm' => [0x00, 0x00, 0x1A, 0x15, 0x15, 0x11, 0x11],
+        'n' => [0x00, 0x00, 0x16, 0x19, 0x11, 0x11, 0x11],
+        'o' => [0x00, 0x00, 0x0E, 0x11, 0x11, 0x11, 0x0E],
+        'p' => [0x00, 0x00, 0x1E, 0x11, 0x1E, 0x10, 0x10],
+        'q' => [0x00, 0x00, 0x0F, 0x11, 0x0F, 0x01, 0x01],
+        'r' => [0x00, 0x00, 0x16, 0x19, 0x10, 0x10, 0x10],
+        's' => [0x00, 0x00, 0x0F, 0x10, 0x0E, 0x01, 0x1E],
+        't' => [0x08, 0x08, 0x1C, 0x08, 0x08, 0x09, 0x06],
+        'u' => [0x00, 0x00, 0x11, 0x11, 0x11, 0x13, 0x0D],
+        'v' => [0x00, 0x00, 0x11, 0x11, 0x11, 0x0A, 0x04],
+        'w' => [0x00, 0x00, 0x11, 0x11, 0x15, 0x15, 0x0A],
+        'x' => [0x00, 0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11],
+        'y' => [0x00, 0x00, 0x11, 0x11, 0x0F, 0x01, 0x0E],
+        'z' => [0x00, 0x00, 0x1F, 0x02, 0x04, 0x08, 0x1F],
+        _ => [0x1F, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1F],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lines_use_the_german_labels_and_compiled_values() {
+        let lines = lines();
+        assert_eq!(lines[0], "Autor: Cursor + Edeler");
+        assert_eq!(lines[1], format!("Version: {}", env!("CARGO_PKG_VERSION")));
+        assert_eq!(lines[2], format!("Git-ID: {}", env!("SCREENMIRROR_GIT_ID")));
+        assert_eq!(lines[3], format!("Baudatum: {}", env!("SCREENMIRROR_BUILD_DATE")));
+        let git = lines[2].split_once(": ").unwrap().1;
+        let date = lines[3].split_once(": ").unwrap().1;
+        assert!(!git.is_empty() && !git.contains(char::is_whitespace));
+        assert!(date == "unbekannt" || (date.len() == 10 && date.as_bytes()[4] == b'-' && date.as_bytes()[7] == b'-'));
+    }
+
+    #[test]
+    fn each_line_paints_ink() {
+        let (w, h) = content_size();
+        let buf = render(w, h);
+        assert_eq!(buf.len(), w as usize * h as usize * 4);
+        let line_h = GLYPH_H * SCALE + GAP_Y;
+        for i in 0..4 {
+            let y0 = PAD_Y + i * line_h;
+            let y1 = y0 + GLYPH_H * SCALE;
+            let mut ink = 0usize;
+            for y in y0..y1 {
+                for x in PAD_X..w.saturating_sub(PAD_X) {
+                    let o = ((y * w + x) * 4) as usize;
+                    if buf[o..o + 3] == FG[..3] {
+                        ink += 1;
+                    }
+                }
+            }
+            assert!(ink > 40, "line {i} has {ink} ink pixels");
+        }
+        // Top-left pixel is the frame; just inside it is the paper background, not black.
+        assert_eq!(&buf[0..4], &EDGE);
+        let inset = ((BORDER + 4) * w + (BORDER + 4)) as usize * 4;
+        assert_eq!(&buf[inset..inset + 4], &BG);
+    }
+
+    #[test]
+    fn preview_ppm() {
+        if std::env::var_os("SCREENMIRROR_PREVIEW").is_none() {
+            return;
+        }
+        let (w, h) = content_size();
+        let buf = render(w, h);
+        let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+        for px in buf.chunks_exact(4) {
+            ppm.extend_from_slice(&[px[2], px[1], px[0]]);
+        }
+        let path = std::env::var("SCREENMIRROR_PREVIEW").unwrap_or_else(|_| "/tmp/about-preview.ppm".into());
+        std::fs::write(&path, ppm).unwrap();
+    }
+}

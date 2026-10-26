@@ -10,6 +10,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  SCREENMIRROR_GIT_ID: ${{ github.sha }}
 
 jobs:
   release:

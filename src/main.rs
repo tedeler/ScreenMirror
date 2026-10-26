@@ -1,6 +1,7 @@
 //! ScreenMirror: mirrors the laptop screen onto the second screen on KDE Plasma (Wayland).
 //! std only; talks D-Bus and the Wayland wire protocol directly.
 
+mod about;
 mod capture;
 mod dbus;
 mod icon;
@@ -23,6 +24,7 @@ Usage:
                                          Keine Spiegelung, Auf diese Arbeitsfläche;
                                          Q stops the mirror and Shift+S swaps the two screens
                                          only while the mirror window is focused)
+
   screenmirror --install [--autostart]   write the .desktop file KWin needs to
                                          authorize screen capture (and autostart)
   screenmirror --list-outputs            show screens and which ones are used

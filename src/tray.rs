@@ -23,8 +23,11 @@ const ID_QUIT: i32 = 5;
 const ID_NONE: i32 = 6;
 const ID_DESKTOP: i32 = 7;
 const ID_ASPECT: i32 = 8;
+const ID_ABOUT: i32 = 9;
 
-const MENU_IDS: [i32; 8] = [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE, ID_DESKTOP, ID_SEP, ID_QUIT];
+const MENU_IDS: [i32; 9] = [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE, ID_DESKTOP, ID_SEP, ID_ABOUT, ID_QUIT];
+/// Properties re-sent when the mode changes. Über is static; it is included because the list is explicit.
+const UPDATED_IDS: [i32; 6] = [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE, ID_ABOUT];
 
 struct MenuSnap {
     mode: Mode,
@@ -90,7 +93,7 @@ impl TrayHandle {
             Value::U32(rev),
             Value::I32(0),
         ]));
-        let updated: Vec<Value> = [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE]
+        let updated: Vec<Value> = UPDATED_IDS
             .iter()
             .map(|&id| Value::Struct(vec![Value::I32(id), item_props(id, &snap)]))
             .collect();
@@ -126,6 +129,7 @@ fn item_props(id: i32, snap: &MenuSnap) -> Value {
         ID_NONE => radio("Keine Spiegelung", !*showing),
         ID_DESKTOP => Value::dict_sv(vec![("label", Value::str("Auf diese Arbeitsfläche"))]),
         ID_SEP => Value::dict_sv(vec![("type", Value::str("separator"))]),
+        ID_ABOUT => Value::dict_sv(vec![("label", Value::str("Über"))]),
         ID_QUIT => Value::dict_sv(vec![("label", Value::str("Quit")), ("icon-name", Value::str("application-exit"))]),
         _ => Value::dict_sv(vec![]),
     }
@@ -356,6 +360,10 @@ impl Tray {
                     eprintln!("screenmirror: start Full on the current virtual desktop");
                 }
             }
+            ID_ABOUT => {
+                shared.update(|st| st.show_about = true);
+                eprintln!("screenmirror: about window requested");
+            }
             ID_QUIT => shared.update(|st| st.quit = true),
             _ => return,
         }
@@ -499,4 +507,42 @@ pub fn start(shared: Arc<Shared>) -> io::Result<TrayHandle> {
     tray.register_with_watcher();
     std::thread::Builder::new().name("tray".into()).spawn(move || tray.run())?;
     Ok(handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn about_is_labeled_ueber_and_listed_with_the_other_items() {
+        assert_eq!(
+            MENU_IDS,
+            [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE, ID_DESKTOP, ID_SEP, ID_ABOUT, ID_QUIT]
+        );
+        assert!(UPDATED_IDS.contains(&ID_ABOUT));
+        let snap = MenuSnap { mode: Mode::Full, showing: true, keep_aspect: true };
+        let label = |id| item_props(id, &snap).dict_get("label").and_then(|v| v.as_str()).map(str::to_string);
+        assert_eq!(label(ID_FULL).as_deref(), Some("Full screen"));
+        assert_eq!(label(ID_ZOOM).as_deref(), Some("Zoom – select region…"));
+        assert_eq!(label(ID_BLACK).as_deref(), Some("Black"));
+        assert_eq!(label(ID_ASPECT).as_deref(), Some("Seitenverhältnis behalten"));
+        assert_eq!(label(ID_NONE).as_deref(), Some("Keine Spiegelung"));
+        assert_eq!(label(ID_DESKTOP).as_deref(), Some("Auf diese Arbeitsfläche"));
+        assert_eq!(label(ID_ABOUT).as_deref(), Some("Über"));
+        assert_eq!(label(ID_QUIT).as_deref(), Some("Quit"));
+        let root = layout(0, 1, &snap);
+        let Value::Struct(fields) = root else { panic!("layout root") };
+        let children = fields[2].as_array().unwrap();
+        let ids: Vec<i32> = children
+            .iter()
+            .map(|v| match v {
+                Value::Variant(inner) => match &**inner {
+                    Value::Struct(f) => f[0].as_i64().unwrap() as i32,
+                    _ => panic!("child"),
+                },
+                _ => panic!("variant"),
+            })
+            .collect();
+        assert_eq!(ids, MENU_IDS.to_vec());
+    }
 }
