@@ -21,7 +21,8 @@ Usage:
                                          run (tray: Full / Zoom / Black,
                                          Seitenverhältnis behalten,
                                          Keine Spiegelung, Auf diese Arbeitsfläche;
-                                         Q stops the mirror only while its window is focused)
+                                         Q stops the mirror and Shift+S swaps the two screens
+                                         only while the mirror window is focused)
   screenmirror --install [--autostart]   write the .desktop file KWin needs to
                                          authorize screen capture (and autostart)
   screenmirror --list-outputs            show screens and which ones are used

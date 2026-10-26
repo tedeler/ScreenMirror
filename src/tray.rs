@@ -164,7 +164,9 @@ fn tooltip_text(mode: &Mode, showing: bool, keep_aspect: bool, error: &Option<St
         (_, true) => "\nAspect ratio kept; unused area is black.".to_string(),
         (_, false) => "\nStretched to fill the screen.".to_string(),
     };
-    let base = format!("{base}{fit}\nQ stops the mirror while its window is focused.");
+    let base = format!(
+        "{base}{fit}\nQ stops the mirror while its window is focused.\nShift+S swaps the two screens while this window is focused."
+    );
     match error {
         Some(e) => format!("{base}\nCapture error: {e}"),
         None => base,
