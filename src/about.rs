@@ -551,6 +551,7 @@ fn natural_size(face: Option<&Face>) -> (u32, u32) {
     (width, height)
 }
 
+#[cfg(test)]
 fn notice_size() -> (u32, u32) {
     natural_size(None)
 }
