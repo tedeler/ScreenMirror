@@ -1,8 +1,10 @@
-//! Über window: the four identity lines, drawn with the system sans.
+//! Über window, laid out like a KDE About dialog.
 //!
-//! The face is fontconfig's `sans` (Plasma uses Noto Sans), read from the font
-//! file when the window opens. Nothing is bundled. A missing font draws a
-//! notice in the same window and does not stop the mirror.
+//! A light client area, an original pair of screens on the left, the four
+//! identity facts in the system sans on the right, and a Schließen button at
+//! the bottom right. The face is fontconfig's `sans` (Plasma uses Noto Sans),
+//! read from the font file when the window opens. Nothing is bundled. A missing
+//! font draws a notice in the same window and does not stop the mirror.
 
 #[path = "stroke.rs"]
 mod stroke;
@@ -15,24 +17,50 @@ use std::sync::OnceLock;
 
 use ttf::Font;
 
-const TITLE: &str = "ScreenMirror";
+/// `xdg_toplevel` title. The compositor draws it in the frame.
+pub const WINDOW_TITLE: &str = "Über ScreenMirror";
+
+const HEADING: &str = "ScreenMirror";
+const INTRO: &str = "Der Bildschirm mit der Plasma-Leiste erscheint auf dem anderen Bildschirm.";
+const BUTTON_LABEL: &str = "Schließen";
+const NOTICE: &str = "Systemschrift nicht gefunden.";
+
 const BODY_PX: f32 = 17.0;
-const TITLE_PX: f32 = 24.0;
+const TITLE_PX: f32 = 26.0;
 const TITLE_PX_SOFT: f32 = 28.0;
-const PAD_X: f32 = 40.0;
-const ACCENT_H: u32 = 4;
+const INTRO_PX: f32 = 16.0;
+const BUTTON_PX: f32 = 15.0;
+const LEFT_COL: f32 = 256.0;
+const EDGE: f32 = 16.0;
+const PANEL_GAP: f32 = 14.0;
+const PANEL_PAD_X: f32 = 32.0;
+const PANEL_PAD_TOP: f32 = 28.0;
+const PANEL_PAD_BOT: f32 = 24.0;
+const TITLE_GAP: f32 = 12.0;
+const INTRO_GAP: f32 = 22.0;
 
 /// XRGB8888, little-endian byte order B, G, R, X.
-const PAPER: [u8; 4] = [0xFD, 0xFC, 0xFB, 0xFF];
-const TITLE_INK: [u8; 4] = [0x1A, 0x17, 0x14, 0xFF];
-const BODY_INK: [u8; 4] = [0x33, 0x2F, 0x2C, 0xFF];
-const ACCENT: [u8; 4] = [0xE9, 0xAE, 0x3D, 0xFF];
-const BORDER: [u8; 4] = [0xDC, 0xD4, 0xD0, 0xFF];
-const DIVIDER: [u8; 4] = [0xED, 0xE8, 0xE6, 0xFF];
-/// Warm disc behind the corner ×, still lighter than the ink.
-const CLOSE_DISC: [u8; 4] = [0xC4, 0xCE, 0xD8, 0xFF];
+const WINDOW: [u8; 4] = [0xF1, 0xF0, 0xEF, 0xFF];
+const PANEL: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
+const PANEL_EDGE: [u8; 4] = [0xD0, 0xCC, 0xC8, 0xFF];
+const INK: [u8; 4] = [0x32, 0x30, 0x2E, 0xFF];
+const MUTED: [u8; 4] = [0x62, 0x5C, 0x54, 0xFF];
+const BUTTON_FILL: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
+const BUTTON_EDGE: [u8; 4] = [0xA4, 0x9E, 0x96, 0xFF];
+const HAIRLINE: [u8; 4] = [0xD6, 0xD2, 0xCE, 0xFF];
+/// Disc behind the corner ×, still lighter than the ink.
+const CLOSE_DISC: [u8; 4] = [0xE2, 0xDC, 0xD6, 0xFF];
 /// Side of the square close control, in buffer pixels.
 const CLOSE_SIDE: u32 = 40;
+
+const BEZEL: [u8; 4] = [0x4A, 0x3C, 0x2E, 0xFF];
+const SKY: [u8; 4] = [0xE6, 0xC4, 0x8C, 0xFF];
+const MEADOW: [u8; 4] = [0x68, 0xB0, 0x72, 0xFF];
+const HILL: [u8; 4] = [0x4C, 0x90, 0x52, 0xFF];
+const SUN: [u8; 4] = [0x4C, 0xB4, 0xF0, 0xFF];
+const CLOUD: [u8; 4] = [0xFF, 0xFB, 0xF7, 0xFF];
+const STAND: [u8; 4] = [0x62, 0x54, 0x46, 0xFF];
+const BACKDROP: [u8; 4] = [0xF2, 0xE6, 0xDC, 0xFF];
 
 const REGULAR_CANDIDATES: &[&str] = &[
     "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
@@ -62,10 +90,7 @@ pub fn lines() -> [&'static str; 4] {
 
 /// Preferred toplevel size in logical pixels (buffer scale 1).
 pub fn content_size() -> (u32, u32) {
-    match installed() {
-        Some(face) => face_metrics(face).size(),
-        None => notice_size(),
-    }
+    natural_size(installed())
 }
 
 /// Path of the sans file used for the body, when one was found.
@@ -90,13 +115,30 @@ pub fn render(width: u32, height: u32) -> Vec<u8> {
     if width == 0 || height == 0 {
         return buf;
     }
-    paint_paper(&mut buf, width, height);
+    paint_window(&mut buf, width, height);
+    let placed = place(width, height);
+    paint_illustration(&mut buf, width, height, placed.art);
+    paint_panel(&mut buf, width, height, placed.panel);
     match installed() {
-        Some(face) => paint_face(&mut buf, width, height, face),
+        Some(face) => paint_prose(&mut buf, width, height, Some(face), &placed),
         None => paint_notice(&mut buf, width, height),
     }
+    paint_button(&mut buf, width, height, installed(), placed.button);
     paint_close(&mut buf, width, height);
     buf
+}
+
+/// Schließen hit target, in buffer pixels. `(x, y, width, height)`.
+pub fn button_rect(width: u32, height: u32) -> (i32, i32, u32, u32) {
+    if width < 48 || height < 48 {
+        return (0, 0, 0, 0);
+    }
+    place(width, height).button
+}
+
+/// True when `(px, py)` lies on the Schließen button. Coordinates are surface pixels.
+pub fn button_contains(width: u32, height: u32, px: f64, py: f64) -> bool {
+    contains_rect(button_rect(width, height), px, py)
 }
 
 /// Square hit target of the corner close control, in buffer pixels.
@@ -114,10 +156,14 @@ pub fn close_rect(width: u32, height: u32) -> (i32, i32, u32, u32) {
 
 /// True when `(px, py)` lies in the close control. Coordinates are surface pixels.
 pub fn close_contains(width: u32, height: u32, px: f64, py: f64) -> bool {
+    contains_rect(close_rect(width, height), px, py)
+}
+
+fn contains_rect(rect: (i32, i32, u32, u32), px: f64, py: f64) -> bool {
     if !px.is_finite() || !py.is_finite() {
         return false;
     }
-    let (x, y, w, h) = close_rect(width, height);
+    let (x, y, w, h) = rect;
     if w == 0 || h == 0 {
         return false;
     }
@@ -303,101 +349,96 @@ fn sans_score(name: &str) -> i32 {
     score
 }
 
-struct Metrics {
-    width: u32,
-    height: u32,
+struct Rhythm {
+    text_h: f32,
     title_px: f32,
     title_baseline: f32,
-    divider_y: i32,
+    intro_step: f32,
+    intro_baseline: f32,
     body_baseline: f32,
     body_step: f32,
+    label_col: f32,
 }
 
-impl Metrics {
-    fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
+struct Place {
+    panel: (i32, i32, u32, u32),
+    art: (i32, i32, u32, u32),
+    button: (i32, i32, u32, u32),
+    text_x: f32,
+    text_max_w: f32,
+    label_col: f32,
+    title_px: f32,
+    title_baseline: f32,
+    intro_step: f32,
+    intro_baseline: f32,
+    body_baseline: f32,
+    body_step: f32,
+    notice_top: f32,
+}
+
+fn face_ref(face: Option<&Face>, bold: bool) -> Option<&Font> {
+    face.map(|f| {
+        if bold {
+            f.bold.as_ref().unwrap_or(&f.regular)
+        } else {
+            &f.regular
+        }
+    })
+}
+
+fn text_width(face: Option<&Face>, text: &str, px: f32, bold: bool) -> f32 {
+    match face_ref(face, bold) {
+        Some(font) => font.measure(text, px),
+        None => stroke_width(text, px),
     }
 }
 
-fn face_metrics(face: &Face) -> Metrics {
-    let title_px = if face.bold.is_some() {
+fn text_lh(face: Option<&Face>, px: f32, bold: bool) -> f32 {
+    match face_ref(face, bold) {
+        Some(font) => font.line_height(px),
+        None => px * 1.45,
+    }
+}
+
+fn text_ascent(face: Option<&Face>, px: f32, bold: bool) -> f32 {
+    match face_ref(face, bold) {
+        Some(font) => font.ascent(px),
+        None => px * 0.80,
+    }
+}
+
+fn title_px(face: Option<&Face>) -> f32 {
+    if face.is_some_and(|f| f.bold.is_some()) {
         TITLE_PX
     } else {
         TITLE_PX_SOFT
-    };
-    let title_font = face.bold.as_ref().unwrap_or(&face.regular);
-    let title_w = title_font.measure(TITLE, title_px);
-    let body_w = lines()
+    }
+}
+
+fn fact_parts(line: &str) -> (&str, &str) {
+    line.split_once(": ").unwrap_or((line, ""))
+}
+
+fn label_column(face: Option<&Face>) -> f32 {
+    ["Autor", "Version", "Git-ID", "Baudatum"]
+        .into_iter()
+        .map(|label| text_width(face, label, BODY_PX, false))
+        .fold(0.0_f32, f32::max)
+        + 28.0
+}
+
+fn preferred_text_w(face: Option<&Face>) -> f32 {
+    let heading = text_width(face, HEADING, title_px(face), true);
+    let labels = label_column(face);
+    let value = lines()
         .iter()
-        .map(|l| face.regular.measure(l, BODY_PX))
+        .map(|line| text_width(face, fact_parts(line).1, BODY_PX, false))
         .fold(0.0_f32, f32::max);
-    let width = (title_w.max(body_w) + PAD_X * 2.0 + 12.0).ceil().max(480.0) as u32;
-    let title_lh = title_font.line_height(title_px);
-    let body_lh = face.regular.line_height(BODY_PX);
-    let mut y = ACCENT_H as f32 + 32.0;
-    let title_baseline = y + title_font.ascent(title_px);
-    y += title_lh + 16.0;
-    let divider_y = y.round() as i32;
-    y += 1.0 + 18.0;
-    let body_baseline = y + face.regular.ascent(BODY_PX);
-    y += body_lh * 4.0;
-    let height = (y + 32.0).ceil() as u32;
-    Metrics {
-        width,
-        height,
-        title_px,
-        title_baseline,
-        divider_y,
-        body_baseline,
-        body_step: body_lh,
-    }
+    heading.max(labels + value + 10.0).max(420.0)
 }
 
-fn paint_face(buf: &mut [u8], width: u32, height: u32, face: &Face) {
-    let m = face_metrics(face);
-    let pad = margin(width);
-    let title_font = face.bold.as_ref().unwrap_or(&face.regular);
-    title_font.draw_line(
-        buf,
-        width,
-        height,
-        TITLE,
-        pad,
-        m.title_baseline,
-        m.title_px,
-        TITLE_INK,
-    );
-    fill_rect(
-        buf,
-        width,
-        height,
-        pad as i32,
-        m.divider_y,
-        (width as f32 - pad * 2.0).max(0.0) as u32,
-        1,
-        DIVIDER,
-    );
-    let max_w = (width as f32 - pad * 2.0).max(8.0);
-    let mut baseline = m.body_baseline;
-    for line in lines() {
-        for part in wrap(&face.regular, line, BODY_PX, max_w) {
-            face.regular
-                .draw_line(buf, width, height, &part, pad, baseline, BODY_PX, BODY_INK);
-            baseline += m.body_step;
-        }
-    }
-}
-
-fn margin(width: u32) -> f32 {
-    if width as f32 > PAD_X * 2.0 + 80.0 {
-        PAD_X
-    } else {
-        16.0
-    }
-}
-
-fn wrap(font: &Font, text: &str, px: f32, max_w: f32) -> Vec<String> {
-    if text.is_empty() || font.measure(text, px) <= max_w {
+fn wrap_measured(text: &str, max_w: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
+    if text.is_empty() || measure(text) <= max_w {
         return vec![text.to_string()];
     }
     let chars: Vec<(usize, char)> = text.char_indices().collect();
@@ -411,7 +452,7 @@ fn wrap(font: &Font, text: &str, px: f32, max_w: f32) -> Vec<String> {
                 continue;
             }
             let next = chars.get(i + 1).map(|c| c.0).unwrap_or(text.len());
-            if font.measure(&text[start..next], px) <= max_w {
+            if measure(&text[start..next]) <= max_w {
                 last_fit = next;
                 if ch == ' ' {
                     last_break = Some(idx);
@@ -442,41 +483,223 @@ fn wrap(font: &Font, text: &str, px: f32, max_w: f32) -> Vec<String> {
         }
         lines.push(text[start..cut].trim_end().to_string());
         start = cut;
-        while start < text.len() && text.as_bytes()[start] == b' ' {
+        while start < text.len() && text.as_bytes().get(start) == Some(&b' ') {
             start += 1;
         }
     }
-    lines
+    if lines.is_empty() {
+        vec![text.to_string()]
+    } else {
+        lines
+    }
 }
 
-fn notice_lines() -> Vec<String> {
-    let mut lines = Vec::with_capacity(6);
-    lines.push("Systemschrift nicht gefunden.".into());
-    lines.push(String::new());
-    lines.extend(self::lines().map(str::to_string));
-    lines
+fn intro_lines(face: Option<&Face>, max_w: f32) -> Vec<String> {
+    wrap_measured(INTRO, max_w, |text| text_width(face, text, INTRO_PX, false))
 }
 
-fn notice_size() -> (u32, u32) {
-    let px = 18.0;
-    let widest = notice_lines()
-        .iter()
-        .map(|l| stroke_width(l, px))
-        .fold(0.0_f32, f32::max);
-    let width = (widest + 36.0 * 2.0 + 12.0).ceil().max(520.0) as u32;
-    let height = (4.0 + 28.0 + px * 1.55 * notice_lines().len() as f32 + 30.0).ceil() as u32;
+fn rhythm(face: Option<&Face>, text_w: f32) -> Rhythm {
+    let title_px = title_px(face);
+    let title_lh = text_lh(face, title_px, true);
+    let intro_step = text_lh(face, INTRO_PX, false).max(INTRO_PX * 1.25);
+    let intro_n = intro_lines(face, text_w).len().max(1);
+    let body_lh = text_lh(face, BODY_PX, false);
+    let body_step = body_lh * 1.62;
+    let notice_h = if face.is_none() {
+        text_lh(None, BODY_PX, false) + 8.0
+    } else {
+        0.0
+    };
+    let mut y = PANEL_PAD_TOP + notice_h;
+    let title_baseline = y + text_ascent(face, title_px, true);
+    y += title_lh + TITLE_GAP;
+    let intro_baseline = y + text_ascent(face, INTRO_PX, false);
+    y += intro_step * intro_n as f32 + INTRO_GAP;
+    let body_baseline = y + text_ascent(face, BODY_PX, false);
+    y += body_step * 4.0 + PANEL_PAD_BOT;
+    Rhythm {
+        text_h: y,
+        title_px,
+        title_baseline,
+        intro_step,
+        intro_baseline,
+        body_baseline,
+        body_step,
+        label_col: label_column(face),
+    }
+}
+
+fn button_size(face: Option<&Face>) -> (u32, u32) {
+    let label = text_width(face, BUTTON_LABEL, BUTTON_PX, false);
+    let w = (label + 54.0).ceil().max(132.0) as u32;
+    let h = (text_lh(face, BUTTON_PX, false) + 16.0)
+        .ceil()
+        .clamp(34.0, 44.0) as u32;
+    (w, h)
+}
+
+fn natural_size(face: Option<&Face>) -> (u32, u32) {
+    let text_w = preferred_text_w(face);
+    let block = rhythm(face, text_w);
+    let (_, bh) = button_size(face);
+    let width = (LEFT_COL + PANEL_PAD_X * 2.0 + text_w + EDGE)
+        .ceil()
+        .max(740.0) as u32;
+    let height = (EDGE + block.text_h + PANEL_GAP + bh as f32 + EDGE)
+        .ceil()
+        .max(420.0) as u32;
     (width, height)
 }
 
-fn paint_notice(buf: &mut [u8], width: u32, height: u32) {
-    let px = 18.0;
-    let pad = margin(width).min(36.0);
-    let step = px * 1.55;
-    let mut y = ACCENT_H as f32 + 28.0;
-    for line in notice_lines() {
-        draw_strokes(buf, width, height, &line, pad, y, px, BODY_INK);
-        y += step;
+fn notice_size() -> (u32, u32) {
+    natural_size(None)
+}
+
+fn place(width: u32, height: u32) -> Place {
+    let face = installed();
+    let (bw, bh) = button_size(face);
+    let margin = EDGE as i32;
+    let bx = (width as i32 - margin - bw as i32).max(4);
+    let by = (height as i32 - margin - bh as i32).max(4);
+    let button = (
+        bx,
+        by,
+        bw.min(width.saturating_sub(8)),
+        bh.min(height.saturating_sub(8)),
+    );
+
+    let panel_x = (LEFT_COL as i32).min((width as i32 - 120).max(margin));
+    let panel_y = margin;
+    let panel_r = (width as i32 - margin).max(panel_x + 40);
+    let panel_b = (by - PANEL_GAP as i32).max(panel_y + 80);
+    let panel = (
+        panel_x,
+        panel_y,
+        (panel_r - panel_x).max(0) as u32,
+        (panel_b - panel_y).max(0) as u32,
+    );
+
+    let art_b = (by - 8).max(panel_y + 40);
+    let art = (
+        8,
+        18,
+        panel_x.saturating_sub(16).max(0) as u32,
+        (art_b - 26).max(0) as u32,
+    );
+
+    let text_x = panel_x as f32 + PANEL_PAD_X;
+    let text_max_w = (panel.2 as f32 - PANEL_PAD_X * 2.0).max(40.0);
+    let block = rhythm(face, text_max_w);
+    let top = panel_y as f32;
+    Place {
+        panel,
+        art,
+        button,
+        text_x,
+        text_max_w,
+        label_col: block.label_col,
+        title_px: block.title_px,
+        title_baseline: top + block.title_baseline,
+        intro_step: block.intro_step,
+        intro_baseline: top + block.intro_baseline,
+        body_baseline: top + block.body_baseline,
+        body_step: block.body_step,
+        notice_top: top + PANEL_PAD_TOP,
     }
+}
+
+fn draw_text(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    face: Option<&Face>,
+    text: &str,
+    x: f32,
+    baseline: f32,
+    px: f32,
+    color: [u8; 4],
+    bold: bool,
+) {
+    if let Some(font) = face_ref(face, bold) {
+        font.draw_line(buf, width, height, text, x, baseline, px, color);
+    } else {
+        draw_strokes(buf, width, height, text, x, baseline - px * 0.78, px, color);
+    }
+}
+
+fn paint_prose(buf: &mut [u8], width: u32, height: u32, face: Option<&Face>, placed: &Place) {
+    draw_text(
+        buf,
+        width,
+        height,
+        face,
+        HEADING,
+        placed.text_x,
+        placed.title_baseline,
+        placed.title_px,
+        INK,
+        true,
+    );
+    let mut baseline = placed.intro_baseline;
+    for line in intro_lines(face, placed.text_max_w) {
+        draw_text(
+            buf,
+            width,
+            height,
+            face,
+            &line,
+            placed.text_x,
+            baseline,
+            INTRO_PX,
+            INK,
+            false,
+        );
+        baseline += placed.intro_step;
+    }
+    baseline = placed.body_baseline;
+    for line in lines() {
+        let (label, value) = fact_parts(line);
+        draw_text(
+            buf,
+            width,
+            height,
+            face,
+            label,
+            placed.text_x,
+            baseline,
+            BODY_PX,
+            MUTED,
+            false,
+        );
+        draw_text(
+            buf,
+            width,
+            height,
+            face,
+            value,
+            placed.text_x + placed.label_col,
+            baseline,
+            BODY_PX,
+            INK,
+            false,
+        );
+        baseline += placed.body_step;
+    }
+}
+
+fn paint_notice(buf: &mut [u8], width: u32, height: u32) {
+    let placed = place(width, height);
+    draw_strokes(
+        buf,
+        width,
+        height,
+        NOTICE,
+        placed.text_x,
+        placed.notice_top,
+        BODY_PX,
+        MUTED,
+    );
+    paint_prose(buf, width, height, None, &placed);
 }
 
 fn stroke_width(text: &str, px: f32) -> f32 {
@@ -579,7 +802,7 @@ fn paint_close(buf: &mut [u8], width: u32, height: u32) {
         cx + arm,
         cy + arm,
         radius,
-        TITLE_INK,
+        INK,
     );
     stroke(
         buf,
@@ -590,7 +813,7 @@ fn paint_close(buf: &mut [u8], width: u32, height: u32) {
         cx - arm,
         cy + arm,
         radius,
-        TITLE_INK,
+        INK,
     );
 }
 
@@ -625,26 +848,408 @@ fn paint_disc(
     }
 }
 
-fn paint_paper(buf: &mut [u8], width: u32, height: u32) {
+fn paint_window(buf: &mut [u8], width: u32, height: u32) {
     for px in buf.chunks_exact_mut(4) {
-        px.copy_from_slice(&PAPER);
+        px.copy_from_slice(&WINDOW);
     }
+    fill_rect(buf, width, height, 0, 0, 1, height, HAIRLINE);
+    if width > 1 {
+        fill_rect(
+            buf,
+            width,
+            height,
+            (width - 1) as i32,
+            0,
+            1,
+            height,
+            HAIRLINE,
+        );
+    }
+    if height > 0 {
+        fill_rect(buf, width, height, 0, 0, width, 1, HAIRLINE);
+    }
+    if height > 1 {
+        fill_rect(
+            buf,
+            width,
+            height,
+            0,
+            (height - 1) as i32,
+            width,
+            1,
+            HAIRLINE,
+        );
+    }
+}
+
+fn paint_panel(buf: &mut [u8], width: u32, height: u32, panel: (i32, i32, u32, u32)) {
+    let (x, y, w, h) = panel;
+    if w < 8 || h < 8 {
+        return;
+    }
+    paint_round(
+        buf,
+        width,
+        height,
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        8.0,
+        Some(PANEL),
+        Some(PANEL_EDGE),
+    );
+}
+
+fn paint_button(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    face: Option<&Face>,
+    button: (i32, i32, u32, u32),
+) {
+    let (x, y, w, h) = button;
+    if w < 8 || h < 8 {
+        return;
+    }
+    paint_round(
+        buf,
+        width,
+        height,
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        5.0,
+        Some(BUTTON_FILL),
+        Some(BUTTON_EDGE),
+    );
+    let cy = y as f32 + h as f32 * 0.5;
+    let ix = x as f32 + 16.0;
+    let arm = 4.6;
+    stroke(
+        buf,
+        width,
+        height,
+        ix - arm,
+        cy - arm,
+        ix + arm,
+        cy + arm,
+        1.15,
+        INK,
+    );
+    stroke(
+        buf,
+        width,
+        height,
+        ix + arm,
+        cy - arm,
+        ix - arm,
+        cy + arm,
+        1.15,
+        INK,
+    );
+    let text_x = ix + 14.0;
+    let baseline = y as f32
+        + (h as f32 - text_lh(face, BUTTON_PX, false)) * 0.5
+        + text_ascent(face, BUTTON_PX, false);
+    draw_text(
+        buf,
+        width,
+        height,
+        face,
+        BUTTON_LABEL,
+        text_x,
+        baseline,
+        BUTTON_PX,
+        INK,
+        false,
+    );
+}
+
+fn paint_illustration(buf: &mut [u8], width: u32, height: u32, art: (i32, i32, u32, u32)) {
+    let (ax, ay, aw, ah) = art;
+    if aw < 48 || ah < 48 {
+        return;
+    }
+    let cx = ax as f32 + aw as f32 * 0.50;
+    let cy = ay as f32 + ah as f32 * 0.46;
+    let backdrop = (aw as f32).min(ah as f32) * 0.40;
+    paint_circle(buf, width, height, cx, cy + 8.0, backdrop, BACKDROP);
+    let mon_w = ((aw as f32 - 28.0) * 0.46).clamp(72.0, 118.0);
+    let mon_h = mon_w * 0.68;
+    let gap = 16.0;
+    let pair_w = mon_w * 2.0 + gap;
+    let x0 = ax as f32 + (aw as f32 - pair_w) * 0.5;
+    let foot = (cy + mon_h * 0.62).min(ay as f32 + ah as f32 - 16.0);
+    paint_ellipse(
+        buf,
+        width,
+        height,
+        cx,
+        foot + 10.0,
+        pair_w * 0.42,
+        7.0,
+        [0xE4, 0xDE, 0xD8, 0xFF],
+    );
+    paint_monitor(
+        buf,
+        width,
+        height,
+        x0,
+        foot - mon_h - 8.0,
+        mon_w,
+        mon_h,
+        foot,
+        false,
+    );
+    paint_monitor(
+        buf,
+        width,
+        height,
+        x0 + mon_w + gap,
+        foot - mon_h - 20.0,
+        mon_w,
+        mon_h,
+        foot,
+        true,
+    );
+}
+
+fn paint_monitor(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    foot: f32,
+    mirrored: bool,
+) {
+    paint_round(buf, width, height, x, y, w, h, 7.0, Some(BEZEL), None);
+    let inset = (w * 0.075).max(6.0);
+    let sx = x + inset;
+    let sy = y + inset;
+    let sw = (w - inset * 2.0).max(4.0);
+    let sh = (h - inset * 2.2).max(4.0);
     fill_rect(
         buf,
         width,
         height,
-        0,
-        0,
-        width,
-        ACCENT_H.min(height),
-        ACCENT,
+        sx as i32,
+        sy as i32,
+        sw as u32,
+        (sh * 0.58) as u32,
+        SKY,
     );
-    fill_rect(buf, width, height, 0, 0, 1, height, BORDER);
-    if width > 1 {
-        fill_rect(buf, width, height, (width - 1) as i32, 0, 1, height, BORDER);
+    let land_y = sy + sh * 0.56;
+    fill_rect(
+        buf,
+        width,
+        height,
+        sx as i32,
+        land_y as i32,
+        sw as u32,
+        (sy + sh - land_y).max(1.0) as u32,
+        MEADOW,
+    );
+    let hill_x = if mirrored {
+        sx + sw * 0.66
+    } else {
+        sx + sw * 0.34
+    };
+    paint_ellipse(
+        buf,
+        width,
+        height,
+        hill_x,
+        sy + sh * 0.70,
+        sw * 0.28,
+        sh * 0.20,
+        HILL,
+    );
+    let sun_x = if mirrored {
+        sx + sw * 0.30
+    } else {
+        sx + sw * 0.70
+    };
+    paint_circle(buf, width, height, sun_x, sy + sh * 0.28, sw * 0.075, SUN);
+    let cloud_x = if mirrored {
+        sx + sw * 0.62
+    } else {
+        sx + sw * 0.34
+    };
+    paint_ellipse(
+        buf,
+        width,
+        height,
+        cloud_x,
+        sy + sh * 0.24,
+        sw * 0.14,
+        sh * 0.07,
+        CLOUD,
+    );
+    let neck_w = (w * 0.09).max(6.0);
+    let neck_top = y + h - 1.0;
+    if foot > neck_top {
+        fill_rect(
+            buf,
+            width,
+            height,
+            (x + w * 0.5 - neck_w * 0.5) as i32,
+            neck_top as i32,
+            neck_w as u32,
+            (foot - neck_top) as u32,
+            STAND,
+        );
     }
-    if height > 1 {
-        fill_rect(buf, width, height, 0, (height - 1) as i32, width, 1, BORDER);
+    let base_w = w * 0.46;
+    paint_round(
+        buf,
+        width,
+        height,
+        x + w * 0.5 - base_w * 0.5,
+        foot - 2.0,
+        base_w,
+        (h * 0.07).max(6.0),
+        3.0,
+        Some(STAND),
+        None,
+    );
+}
+
+fn paint_round(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    fill: Option<[u8; 4]>,
+    border: Option<[u8; 4]>,
+) {
+    if w <= 1.0 || h <= 1.0 {
+        return;
+    }
+    let radius = radius.min(w * 0.5).min(h * 0.5).max(0.0);
+    let x0 = (x - 1.5).floor().max(0.0) as i32;
+    let y0 = (y - 1.5).floor().max(0.0) as i32;
+    let x1 = ((x + w + 1.5).ceil() as i32).min(width as i32 - 1);
+    let y1 = ((y + h + 1.5).ceil() as i32).min(height as i32 - 1);
+    for py in y0..=y1 {
+        for px in x0..=x1 {
+            let sd = sd_round_rect(px as f32 + 0.5, py as f32 + 0.5, x, y, w, h, radius);
+            if let Some(color) = fill {
+                if sd <= -1.05 {
+                    put(buf, width, height, px, py, color);
+                } else {
+                    let cov = coverage_inside(sd);
+                    if cov > 0.0 {
+                        ttf::blend(buf, width, height, px, py, color, cov);
+                    }
+                }
+            }
+            if let Some(color) = border {
+                let cov = coverage_inside(sd.abs() - 0.75);
+                if cov > 0.0 {
+                    ttf::blend(buf, width, height, px, py, color, cov);
+                }
+            }
+        }
+    }
+}
+
+fn paint_circle(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    color: [u8; 4],
+) {
+    if radius <= 0.5 {
+        return;
+    }
+    let x0 = (cx - radius - 1.5).floor().max(0.0) as i32;
+    let y0 = (cy - radius - 1.5).floor().max(0.0) as i32;
+    let x1 = ((cx + radius + 1.5).ceil() as i32).min(width as i32 - 1);
+    let y1 = ((cy + radius + 1.5).ceil() as i32).min(height as i32 - 1);
+    for py in y0..=y1 {
+        for px in x0..=x1 {
+            let sd = (px as f32 + 0.5 - cx).hypot(py as f32 + 0.5 - cy) - radius;
+            if sd <= -1.05 {
+                put(buf, width, height, px, py, color);
+            } else {
+                let cov = coverage_inside(sd);
+                if cov > 0.0 {
+                    ttf::blend(buf, width, height, px, py, color, cov);
+                }
+            }
+        }
+    }
+}
+
+fn paint_ellipse(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    cx: f32,
+    cy: f32,
+    rx: f32,
+    ry: f32,
+    color: [u8; 4],
+) {
+    let rx = rx.max(0.5);
+    let ry = ry.max(0.5);
+    let x0 = (cx - rx - 1.5).floor().max(0.0) as i32;
+    let y0 = (cy - ry - 1.5).floor().max(0.0) as i32;
+    let x1 = ((cx + rx + 1.5).ceil() as i32).min(width as i32 - 1);
+    let y1 = ((cy + ry + 1.5).ceil() as i32).min(height as i32 - 1);
+    for py in y0..=y1 {
+        for px in x0..=x1 {
+            let nx = (px as f32 + 0.5 - cx) / rx;
+            let ny = (py as f32 + 0.5 - cy) / ry;
+            let sd = (nx.hypot(ny) - 1.0) * rx.min(ry);
+            if sd <= -1.05 {
+                put(buf, width, height, px, py, color);
+            } else {
+                let cov = coverage_inside(sd);
+                if cov > 0.0 {
+                    ttf::blend(buf, width, height, px, py, color, cov);
+                }
+            }
+        }
+    }
+}
+
+fn sd_round_rect(px: f32, py: f32, x: f32, y: f32, w: f32, h: f32, radius: f32) -> f32 {
+    let qx = (px - (x + w * 0.5)).abs() - w * 0.5 + radius;
+    let qy = (py - (y + h * 0.5)).abs() - h * 0.5 + radius;
+    qy.max(qx).min(0.0) + qx.max(0.0).hypot(qy.max(0.0)) - radius
+}
+
+fn coverage_inside(sd: f32) -> f32 {
+    let edge = 0.85;
+    if sd <= -edge {
+        1.0
+    } else if sd >= edge {
+        0.0
+    } else {
+        (edge - sd) / (2.0 * edge)
+    }
+}
+
+fn put(buf: &mut [u8], width: u32, height: u32, x: i32, y: i32, color: [u8; 4]) {
+    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+        return;
+    }
+    let i = ((y as u32 * width + x as u32) * 4) as usize;
+    if i + 4 <= buf.len() {
+        buf[i..i + 4].copy_from_slice(&color);
     }
 }
 
@@ -697,24 +1302,40 @@ mod tests {
     }
 
     #[test]
-    fn dialog_is_a_small_light_window() {
+    fn dialog_is_a_light_about_window() {
         let (w, h) = content_size();
-        assert!((420..=1400).contains(&w), "width {w}");
-        assert!((180..=800).contains(&h), "height {h}");
+        assert!((640..=1400).contains(&w), "width {w}");
+        assert!((400..=800).contains(&h), "height {h}");
         let buf = render(w, h);
         assert_eq!(buf.len(), w as usize * h as usize * 4);
-        // Framed, not a black field. The corner is the hairline; inside is paper.
-        assert_eq!(&buf[0..4], &BORDER);
-        let inset = ((12 * w + 12) * 4) as usize;
-        assert_eq!(&buf[inset..inset + 4], &PAPER);
+        assert_eq!(&buf[0..4], &HAIRLINE);
+        let inset = ((6 * w + 6) * 4) as usize;
+        assert_eq!(&buf[inset..inset + 4], &WINDOW);
         let light = buf
             .chunks_exact(4)
             .filter(|p| p[0] > 220 && p[1] > 220 && p[2] > 220)
             .count();
         assert!(light * 10 > buf.len() / 4 * 6, "surface should stay light");
-        // Accent sits on the top edge, inside the hairline.
-        let accent = ((2 * w + 8) * 4) as usize;
-        assert_eq!(&buf[accent..accent + 4], &ACCENT);
+        let placed = place(w, h);
+        let (px, py) = (placed.panel.0 + 24, placed.panel.1 + 10);
+        let i = ((py as u32 * w + px as u32) * 4) as usize;
+        assert_eq!(&buf[i..i + 4], &PANEL, "the right side is a light card");
+        let mut color = 0u32;
+        let x1 = (placed.art.0 + placed.art.2 as i32).max(0) as u32;
+        let y1 = (placed.art.1 + placed.art.3 as i32).max(0) as u32;
+        for y in (placed.art.1.max(0) as u32)..y1.min(h) {
+            for x in (placed.art.0.max(0) as u32)..x1.min(w / 2) {
+                let i = ((y * w + x) * 4) as usize;
+                let (b, g, r) = (buf[i] as i16, buf[i + 1] as i16, buf[i + 2] as i16);
+                if (r - b).abs() > 28 || (g - b).abs() > 36 {
+                    color += 1;
+                }
+            }
+        }
+        assert!(
+            color > 400,
+            "illustration should sit on the left, colorful pixels {color}"
+        );
     }
 
     #[test]
@@ -727,7 +1348,7 @@ mod tests {
             s < 520
         };
         let mut bands = [0u32; 8];
-        for y in ACCENT_H..h.saturating_sub(2) {
+        for y in 8..h.saturating_sub(2) {
             let mut row = 0u32;
             for x in 8..w.saturating_sub(8) {
                 if dark(x, y) {
@@ -775,7 +1396,7 @@ mod tests {
     fn missing_font_notice_still_paints_the_facts() {
         let (w, h) = notice_size();
         let mut buf = vec![0u8; w as usize * h as usize * 4];
-        paint_paper(&mut buf, w, h);
+        paint_window(&mut buf, w, h);
         paint_notice(&mut buf, w, h);
         let ink = buf
             .chunks_exact(4)
@@ -794,15 +1415,81 @@ mod tests {
     }
 
     #[test]
-    fn git_id_fits_the_dialog_width() {
+    fn git_id_fits_the_text_column() {
         let Some(face) = installed() else { return };
-        let (w, _) = content_size();
-        let git = lines()[2];
-        let text_w = face.regular.measure(git, BODY_PX);
+        let (w, h) = content_size();
+        let placed = place(w, h);
+        let value = lines()[2].split_once(": ").unwrap().1;
+        let text_w = face.regular.measure(value, BODY_PX);
         assert!(
-            text_w + PAD_X * 2.0 + 4.0 <= w as f32,
-            "git line {text_w} in {w}"
+            placed.label_col + text_w <= placed.text_max_w + 1.0,
+            "git value {text_w} col {} max {}",
+            placed.label_col,
+            placed.text_max_w
         );
+        let last = placed.body_baseline + placed.body_step * 3.0 + 6.0;
+        let bottom = placed.panel.1 as f32 + placed.panel.3 as f32;
+        assert!(
+            last < bottom,
+            "facts overflow the card ({last} >= {bottom})"
+        );
+    }
+
+    #[test]
+    fn schliessen_button_is_a_button_at_the_bottom_right() {
+        let (w, h) = content_size();
+        let (x, y, bw, bh) = button_rect(w, h);
+        assert!(bw >= 110 && bh >= 32, "button {bw}x{bh}");
+        assert!(x as u32 > w / 2, "Schließen stays on the right, x {x}");
+        assert!(y as u32 > h / 2, "Schließen stays along the bottom, y {y}");
+        assert!(y as u32 + bh + 6 < h, "padding under the button");
+        assert!(x as u32 + bw + 6 < w, "padding to the right of the button");
+        let buf = render(w, h);
+        let sum = |px: i32, py: i32| {
+            let i = ((py as u32 * w + px as u32) * 4) as usize;
+            buf[i] as u16 + buf[i + 1] as u16 + buf[i + 2] as u16
+        };
+        let edge = sum(x, y + bh as i32 / 2);
+        let fill = sum(x + bw as i32 - 8, y + bh as i32 / 2);
+        assert!(
+            edge + 30 < fill,
+            "border {edge} should be darker than the fill {fill}"
+        );
+        let mut ink = 0u32;
+        for py in y..y + bh as i32 {
+            for px in x..x + bw as i32 {
+                if sum(px, py) < 420 {
+                    ink += 1;
+                }
+            }
+        }
+        assert!(ink > 70, "Schließen label ink {ink}");
+        assert!(button_contains(
+            w,
+            h,
+            x as f64 + bw as f64 * 0.5,
+            y as f64 + bh as f64 * 0.5
+        ));
+        assert!(!close_contains(
+            w,
+            h,
+            x as f64 + 4.0,
+            y as f64 + bh as f64 * 0.5
+        ));
+        let (kx, ky, kw, kh) = close_rect(w, h);
+        assert!(!button_contains(
+            w,
+            h,
+            kx as f64 + kw as f64 * 0.5,
+            ky as f64 + kh as f64 * 0.5
+        ));
+        assert!(!button_contains(w, h, f64::NAN, 0.0));
+        assert_eq!(button_rect(0, 0), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn window_title_names_screenmirror() {
+        assert_eq!(WINDOW_TITLE, "Über ScreenMirror");
     }
 
     #[test]
