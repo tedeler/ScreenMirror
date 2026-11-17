@@ -9,12 +9,14 @@ Homepage: https://github.com/tedeler/ScreenMirror
 
 Package: screenmirror
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, qt6-wayland
+Depends: ${shlibs:Depends}, ${misc:Depends}, qt6-wayland, curl
 Suggests: plasma-workspace
 Description: mirror one Plasma screen onto the other
  ScreenMirror captures the screen that holds the KDE panel and shows
  it on the other output. The tray menu chooses Full, Zoom, or Black,
- and can stop the mirror without quitting. Über opens a Qt dialog with
+ and can stop the mirror without quitting. A left click on the icon
+ toggles that mirror. The menu can check GitHub for a newer release
+ and download it with curl. Über opens a Qt dialog with
  the author, version, git id, and build date.
  .
  The package installs the binary, the desktop entry KWin uses to

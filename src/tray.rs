@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::dbus::{self, Connection, Message, Sender, Value};
 use crate::icon;
 use crate::state::{Mode, Shared};
+use crate::update::{self, UpdateNote};
 
 const SNI_PATH: &str = "/StatusNotifierItem";
 const MENU_PATH: &str = "/MenuBar";
@@ -24,20 +25,28 @@ const ID_NONE: i32 = 6;
 const ID_DESKTOP: i32 = 7;
 const ID_ASPECT: i32 = 8;
 const ID_ABOUT: i32 = 9;
+const ID_UPDATE: i32 = 10;
 
-const MENU_IDS: [i32; 9] = [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE, ID_DESKTOP, ID_SEP, ID_ABOUT, ID_QUIT];
-/// Properties re-sent when the mode changes. Über is static; it is included because the list is explicit.
-const UPDATED_IDS: [i32; 6] = [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE, ID_ABOUT];
+const MENU_IDS: [i32; 10] =
+    [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE, ID_DESKTOP, ID_SEP, ID_UPDATE, ID_ABOUT, ID_QUIT];
+/// Properties re-sent when the mode or the update check changes.
+const UPDATED_IDS: [i32; 7] = [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE, ID_ABOUT, ID_UPDATE];
 
 struct MenuSnap {
     mode: Mode,
     showing: bool,
     keep_aspect: bool,
+    update: UpdateNote,
 }
 
 fn menu_snap(shared: &Shared) -> MenuSnap {
     let st = shared.state.lock().unwrap();
-    MenuSnap { mode: st.mode, showing: st.showing, keep_aspect: st.keep_aspect }
+    MenuSnap {
+        mode: st.mode,
+        showing: st.showing,
+        keep_aspect: st.keep_aspect,
+        update: st.update.clone(),
+    }
 }
 
 const KGLOBALACCEL: &str = "org.kde.kglobalaccel";
@@ -115,7 +124,7 @@ fn item_props(id: i32, snap: &MenuSnap) -> Value {
             ("toggle-state", Value::I32(on as i32)),
         ])
     };
-    let MenuSnap { mode, showing, keep_aspect } = snap;
+    let MenuSnap { mode, showing, keep_aspect, update } = snap;
     match id {
         0 => Value::dict_sv(vec![("children-display", Value::str("submenu"))]),
         ID_FULL => radio("Full screen", *showing && matches!(mode, Mode::Full)),
@@ -129,6 +138,13 @@ fn item_props(id: i32, snap: &MenuSnap) -> Value {
         ID_NONE => radio("Keine Spiegelung", !*showing),
         ID_DESKTOP => Value::dict_sv(vec![("label", Value::str("Auf diese Arbeitsfläche"))]),
         ID_SEP => Value::dict_sv(vec![("type", Value::str("separator"))]),
+        ID_UPDATE => {
+            let busy = matches!(update, UpdateNote::Checking | UpdateNote::Downloading { .. });
+            Value::dict_sv(vec![
+                ("label", Value::Str(update::menu_label(update))),
+                ("enabled", Value::Bool(!busy)),
+            ])
+        }
         ID_ABOUT => Value::dict_sv(vec![("label", Value::str("Über"))]),
         ID_QUIT => Value::dict_sv(vec![("label", Value::str("Quit")), ("icon-name", Value::str("application-exit"))]),
         _ => Value::dict_sv(vec![]),
@@ -144,9 +160,17 @@ fn layout(id: i32, depth: i32, snap: &MenuSnap) -> Value {
     Value::Struct(vec![Value::I32(id), item_props(id, snap), Value::Array("v".into(), children)])
 }
 
-fn tooltip_text(mode: &Mode, showing: bool, keep_aspect: bool, error: &Option<String>) -> String {
+fn tooltip_text(
+    mode: &Mode,
+    showing: bool,
+    keep_aspect: bool,
+    error: &Option<String>,
+    update: &UpdateNote,
+) -> String {
+    let click = "Left click turns the mirror off or back on. Right click opens the menu.";
+    let update = update::tooltip_line(update);
     if !showing {
-        let base = "Not mirroring. Choose a mode to start again.".to_string();
+        let base = format!("Not mirroring. Choose a mode, or left-click the icon, to start again.\n{click}\n{update}");
         return match error {
             Some(e) => format!("{base}\nCapture error: {e}"),
             None => base,
@@ -169,7 +193,7 @@ fn tooltip_text(mode: &Mode, showing: bool, keep_aspect: bool, error: &Option<St
         (_, false) => "\nStretched to fill the screen.".to_string(),
     };
     let base = format!(
-        "{base}{fit}\nQ stops the mirror while its window is focused.\nShift+S swaps the two screens while this window is focused."
+        "{base}{fit}\nQ stops the mirror while its window is focused.\nShift+S swaps the two screens while this window is focused.\n{click}\n{update}"
     );
     match error {
         Some(e) => format!("{base}\nCapture error: {e}"),
@@ -178,9 +202,9 @@ fn tooltip_text(mode: &Mode, showing: bool, keep_aspect: bool, error: &Option<St
 }
 
 fn sni_props(shared: &Shared) -> Vec<(&'static str, Value)> {
-    let (mode, showing, keep_aspect, err) = {
+    let (mode, showing, keep_aspect, err, update) = {
         let st = shared.state.lock().unwrap();
-        (st.mode, st.showing, st.keep_aspect, st.capture_error.clone())
+        (st.mode, st.showing, st.keep_aspect, st.capture_error.clone(), st.update.clone())
     };
     let title = if showing {
         format!("ScreenMirror – {}", mode.name())
@@ -207,10 +231,12 @@ fn sni_props(shared: &Shared) -> Vec<(&'static str, Value)> {
                 Value::str(""),
                 Value::Array("(iiay)".into(), vec![]),
                 Value::Str(title),
-                Value::Str(tooltip_text(&mode, showing, keep_aspect, &err)),
+                Value::Str(tooltip_text(&mode, showing, keep_aspect, &err, &update)),
             ]),
         ),
-        ("ItemIsMenu", Value::Bool(true)),
+        // False so Plasma calls Activate on left click and opens Menu on right click.
+        // True would make the left click open this menu instead of toggling the mirror.
+        ("ItemIsMenu", Value::Bool(false)),
         ("Menu", Value::Path(MENU_PATH.into())),
     ]
 }
@@ -364,6 +390,7 @@ impl Tray {
                 shared.update(|st| st.show_about = true);
                 eprintln!("screenmirror: about window requested");
             }
+            ID_UPDATE => self.on_update_item(),
             ID_QUIT => shared.update(|st| st.quit = true),
             _ => return,
         }
@@ -403,7 +430,11 @@ impl Tray {
                 let id = std::fs::read_to_string("/etc/machine-id").unwrap_or_default();
                 m.reply(vec![Value::Str(id.trim().to_string())])
             }
-            (SNI_IFACE, "Activate" | "SecondaryActivate" | "ContextMenu" | "Scroll") => m.reply(vec![]),
+            (SNI_IFACE, "Activate") => {
+                self.on_activate();
+                m.reply(vec![])
+            }
+            (SNI_IFACE, "SecondaryActivate" | "ContextMenu" | "Scroll") => m.reply(vec![]),
             (MENU_IFACE, "GetLayout") => {
                 let rev = self.handle.revision.load(Ordering::SeqCst);
                 m.reply(vec![Value::U32(rev), layout(arg_i(0), arg_i(1), &snap)])
@@ -462,6 +493,98 @@ impl Tray {
         }
     }
 
+    /// Left click. The mode, including a zoom region, stays; only the window is mapped or unmapped.
+    fn on_activate(&mut self) {
+        let mut showing = false;
+        let mut summary = String::new();
+        self.handle.shared.update(|st| {
+            st.toggle_mirror();
+            showing = st.showing;
+            summary = match st.mode {
+                Mode::Full => "full screen".to_string(),
+                Mode::Black => "black".to_string(),
+                Mode::Zoom(r) => format!(
+                    "zoom {:.0}%×{:.0}% at {:.0}%,{:.0}%",
+                    r.w * 100.0,
+                    r.h * 100.0,
+                    r.x * 100.0,
+                    r.y * 100.0
+                ),
+            };
+        });
+        if showing {
+            eprintln!("screenmirror: tray icon restored {summary}");
+        } else {
+            eprintln!("screenmirror: tray icon stopped the mirror");
+        }
+        self.handle.mode_changed();
+    }
+
+    fn on_update_item(&mut self) {
+        let note = self.handle.shared.state.lock().unwrap().update.clone();
+        match note {
+            UpdateNote::Checking | UpdateNote::Downloading { .. } => {}
+            UpdateNote::Ready { version, url, filename } => self.spawn_download(version, url, filename),
+            _ => self.spawn_check(),
+        }
+    }
+
+    fn spawn_check(&mut self) {
+        if matches!(
+            self.handle.shared.state.lock().unwrap().update,
+            UpdateNote::Checking | UpdateNote::Downloading { .. }
+        ) {
+            return;
+        }
+        self.handle.shared.update(|st| st.update = UpdateNote::Checking);
+        self.handle.mode_changed();
+        let shared = self.handle.shared.clone();
+        let handle = self.handle.clone();
+        if std::thread::Builder::new()
+            .name("update-check".into())
+            .spawn(move || {
+                let note = update::check(env!("CARGO_PKG_VERSION"));
+                eprintln!("screenmirror: {}", update::tooltip_line(&note));
+                shared.update(|st| st.update = note);
+                handle.mode_changed();
+            })
+            .is_err()
+        {
+            self.handle.shared.update(|st| {
+                st.update = UpdateNote::Failed { message: "could not start the update check".into() }
+            });
+            self.handle.mode_changed();
+        }
+    }
+
+    fn spawn_download(&mut self, version: String, url: String, filename: String) {
+        if matches!(
+            self.handle.shared.state.lock().unwrap().update,
+            UpdateNote::Checking | UpdateNote::Downloading { .. }
+        ) {
+            return;
+        }
+        self.handle.shared.update(|st| st.update = UpdateNote::Downloading { version: version.clone() });
+        self.handle.mode_changed();
+        let shared = self.handle.shared.clone();
+        let handle = self.handle.clone();
+        if std::thread::Builder::new()
+            .name("update-download".into())
+            .spawn(move || {
+                let note = update::download(&url, &filename);
+                eprintln!("screenmirror: {}", update::tooltip_line(&note));
+                shared.update(|st| st.update = note);
+                handle.mode_changed();
+            })
+            .is_err()
+        {
+            self.handle.shared.update(|st| {
+                st.update = UpdateNote::Failed { message: "could not start the download".into() }
+            });
+            self.handle.mode_changed();
+        }
+    }
+
     fn run(mut self) {
         loop {
             let m = match self.conn.next() {
@@ -517,10 +640,16 @@ mod tests {
     fn about_is_labeled_ueber_and_listed_with_the_other_items() {
         assert_eq!(
             MENU_IDS,
-            [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE, ID_DESKTOP, ID_SEP, ID_ABOUT, ID_QUIT]
+            [ID_FULL, ID_ZOOM, ID_BLACK, ID_ASPECT, ID_NONE, ID_DESKTOP, ID_SEP, ID_UPDATE, ID_ABOUT, ID_QUIT]
         );
         assert!(UPDATED_IDS.contains(&ID_ABOUT));
-        let snap = MenuSnap { mode: Mode::Full, showing: true, keep_aspect: true };
+        assert!(UPDATED_IDS.contains(&ID_UPDATE));
+        let snap = MenuSnap {
+            mode: Mode::Full,
+            showing: true,
+            keep_aspect: true,
+            update: UpdateNote::Idle,
+        };
         let label = |id| item_props(id, &snap).dict_get("label").and_then(|v| v.as_str()).map(str::to_string);
         assert_eq!(label(ID_FULL).as_deref(), Some("Full screen"));
         assert_eq!(label(ID_ZOOM).as_deref(), Some("Zoom – select region…"));
@@ -528,6 +657,7 @@ mod tests {
         assert_eq!(label(ID_ASPECT).as_deref(), Some("Seitenverhältnis behalten"));
         assert_eq!(label(ID_NONE).as_deref(), Some("Keine Spiegelung"));
         assert_eq!(label(ID_DESKTOP).as_deref(), Some("Auf diese Arbeitsfläche"));
+        assert_eq!(label(ID_UPDATE).as_deref(), Some("Check for updates"));
         assert_eq!(label(ID_ABOUT).as_deref(), Some("Über"));
         assert_eq!(label(ID_QUIT).as_deref(), Some("Quit"));
         let root = layout(0, 1, &snap);
@@ -544,5 +674,34 @@ mod tests {
             })
             .collect();
         assert_eq!(ids, MENU_IDS.to_vec());
+    }
+
+    #[test]
+    fn the_update_item_shows_the_check_and_a_download() {
+        let snap = MenuSnap {
+            mode: Mode::Zoom(crate::state::RegionF { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }),
+            showing: false,
+            keep_aspect: true,
+            update: UpdateNote::Ready {
+                version: "0.0.8".into(),
+                url: "https://github.com/tedeler/ScreenMirror/releases/download/v0.0.8/screenmirror_0.0.8_amd64.deb".into(),
+                filename: "screenmirror_0.0.8_amd64.deb".into(),
+            },
+        };
+        let label = item_props(ID_UPDATE, &snap).dict_get("label").and_then(|v| v.as_str()).map(str::to_string);
+        assert_eq!(label.as_deref(), Some("Download 0.0.8"));
+        let current = MenuSnap { update: UpdateNote::Current { version: "0.0.7".into() }, ..snap };
+        let label = item_props(ID_UPDATE, &current).dict_get("label").and_then(|v| v.as_str()).map(str::to_string);
+        assert_eq!(label.as_deref(), Some("Up to date (0.0.7)"));
+    }
+
+    #[test]
+    fn left_click_activates_and_right_click_keeps_the_menu() {
+        let (shared, _wake) = Shared::new(true).unwrap();
+        let props = sni_props(&shared);
+        let item_is_menu = props.iter().find(|(k, _)| *k == "ItemIsMenu").map(|(_, v)| v.clone());
+        assert_eq!(item_is_menu, Some(Value::Bool(false)));
+        let menu = props.iter().find(|(k, _)| *k == "Menu").map(|(_, v)| v.clone());
+        assert_eq!(menu, Some(Value::Path(MENU_PATH.into())));
     }
 }
