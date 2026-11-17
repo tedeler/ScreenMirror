@@ -56,14 +56,24 @@ fn compile_about_helper(manifest_dir: &str) {
     if !status.success() {
         panic!("failed to compile src/about_dialog.cpp");
     }
-    // target/<profile>/build/<pkg>/out -> target/<profile>
-    let profile_dir = Path::new(&out_dir)
-        .ancestors()
-        .nth(3)
-        .unwrap_or(Path::new(&out_dir));
+    // The helper has to sit next to the screenmirror binary. OUT_DIR is either
+    // target/<profile>/build/<pkg>-<hash>/out or the newer
+    // target/<profile>/build/<pkg>/<hash>/out, so a fixed ancestor count
+    // lands inside build/ and dh_install never sees target/release/screenmirror-about.
+    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "release".into());
+    let profile_dir = profile_dir(Path::new(&out_dir), &profile);
     let sibling = profile_dir.join("screenmirror-about");
     std::fs::copy(&built, &sibling).unwrap_or_else(|e| panic!("copy about helper: {e}"));
+    eprintln!("screenmirror: about helper {}", sibling.display());
     println!("cargo:rustc-env=SCREENMIRROR_ABOUT_HELPER={}", sibling.display());
+}
+
+/// Profile directory that holds the screenmirror binary, given cargo's OUT_DIR.
+fn profile_dir<'a>(out_dir: &'a Path, profile: &str) -> &'a Path {
+    out_dir
+        .ancestors()
+        .find(|dir| dir.file_name().and_then(|name| name.to_str()) == Some(profile))
+        .unwrap_or(out_dir)
 }
 
 /// Rebuild when the checked-out commit changes. `.git/HEAD` is only a symbolic
@@ -156,4 +166,30 @@ fn env_token(key: &str) -> Option<String> {
 fn token(s: &str) -> Option<String> {
     let t: String = s.split_whitespace().next().unwrap_or("").chars().filter(|c| c.is_ascii_graphic()).take(64).collect();
     if t.is_empty() { None } else { Some(t) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_dir_matches_the_old_out_dir_layout() {
+        let out = Path::new("target/release/build/screenmirror-abc123/out");
+        assert_eq!(profile_dir(out, "release"), Path::new("target/release"));
+    }
+
+    #[test]
+    fn profile_dir_matches_the_newer_out_dir_layout() {
+        let out = Path::new("target/release/build/screenmirror/abc123/out");
+        assert_eq!(profile_dir(out, "release"), Path::new("target/release"));
+    }
+
+    #[test]
+    fn profile_dir_keeps_a_target_triple() {
+        let out = Path::new("target/x86_64-unknown-linux-gnu/debug/build/screenmirror/abc/out");
+        assert_eq!(
+            profile_dir(out, "debug"),
+            Path::new("target/x86_64-unknown-linux-gnu/debug")
+        );
+    }
 }
