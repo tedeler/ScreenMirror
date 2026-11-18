@@ -9,6 +9,7 @@ mod mirror;
 mod state;
 mod sys;
 mod tray;
+mod update;
 mod wayland;
 
 use std::io::{self, Write};
@@ -21,7 +22,9 @@ Usage:
   screenmirror [--fps N] [--no-cursor] [--no-mirror]
                                          run (tray: Full / Zoom / Black,
                                          Seitenverhältnis behalten,
-                                         Keine Spiegelung, Auf diese Arbeitsfläche;
+                                         Keine Spiegelung, Auf diese Arbeitsfläche,
+                                         Check for updates;
+                                         left click toggles the mirror;
                                          Q stops the mirror and Shift+S swaps the two screens
                                          only while the mirror window is focused)
 
