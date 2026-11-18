@@ -14,7 +14,7 @@ pub const WINDOW_TITLE: &str = "Über ScreenMirror";
 pub fn lines() -> [&'static str; 4] {
     [
         "Autor: Cursor + Edeler",
-        concat!("Version: ", env!("CARGO_PKG_VERSION")),
+        concat!("Version: ", env!("SCREENMIRROR_VERSION")),
         concat!("Git-ID: ", env!("SCREENMIRROR_GIT_ID")),
         concat!("Baudatum: ", env!("SCREENMIRROR_BUILD_DATE")),
     ]
@@ -127,7 +127,7 @@ mod tests {
     fn lines_use_the_german_labels_and_compiled_values() {
         let lines = lines();
         assert_eq!(lines[0], "Autor: Cursor + Edeler");
-        assert_eq!(lines[1], format!("Version: {}", env!("CARGO_PKG_VERSION")));
+        assert_eq!(lines[1], format!("Version: {}", crate::VERSION));
         assert_eq!(lines[2], format!("Git-ID: {}", env!("SCREENMIRROR_GIT_ID")));
         assert_eq!(lines[3], format!("Baudatum: {}", env!("SCREENMIRROR_BUILD_DATE")));
         let git = fact(lines[2]);
@@ -144,7 +144,7 @@ mod tests {
         let args = arguments();
         assert_eq!(args[0], "Über ScreenMirror");
         assert_eq!(args[1], "Cursor + Edeler");
-        assert_eq!(args[2], env!("CARGO_PKG_VERSION"));
+        assert_eq!(args[2], crate::VERSION);
         assert_eq!(args[3], fact(lines()[2]));
         assert_eq!(args[4], fact(lines()[3]));
     }

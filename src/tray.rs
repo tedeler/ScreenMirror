@@ -543,7 +543,7 @@ impl Tray {
         if std::thread::Builder::new()
             .name("update-check".into())
             .spawn(move || {
-                let note = update::check(env!("CARGO_PKG_VERSION"));
+                let note = update::check(crate::VERSION);
                 eprintln!("screenmirror: {}", update::tooltip_line(&note));
                 shared.update(|st| st.update = note);
                 handle.mode_changed();

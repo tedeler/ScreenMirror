@@ -71,7 +71,7 @@ pub fn tooltip_line(note: &UpdateNote) -> String {
     }
 }
 
-/// Asks GitHub for the latest release and compares it with `current` (`Cargo.toml` version).
+/// Asks GitHub for the latest release and compares it with the displayed version.
 pub fn check(current: &str) -> UpdateNote {
     match query(current) {
         Ok(note) => note,
@@ -130,7 +130,7 @@ fn save_asset(url: &str, filename: &str) -> Result<PathBuf, String> {
 }
 
 fn user_agent() -> String {
-    format!("ScreenMirror/{}", env!("CARGO_PKG_VERSION"))
+    format!("ScreenMirror/{}", crate::VERSION)
 }
 
 fn curl_text(url: &str, timeout: Duration) -> Result<String, String> {
@@ -731,6 +731,16 @@ mod tests {
     }
 
     #[test]
+    fn major_minor_releases_compare_with_legacy_and_cargo_versions() {
+        let release = parse_version("v1.00").unwrap();
+        assert!(is_newer(&release, &parse_version("0.0.7").unwrap()));
+        assert!(!is_newer(&release, &parse_version("1.0.0").unwrap()));
+        assert!(!is_newer(&parse_version("1.0.0").unwrap(), &release));
+        assert!(is_newer(&parse_version("v1.01").unwrap(), &release));
+        assert_eq!(display_version("v1.00"), "1.00");
+    }
+
+    #[test]
     fn download_urls_stay_on_this_repos_releases() {
         assert!(allowed_download_url(
             "https://github.com/tedeler/ScreenMirror/releases/download/v0.0.8/screenmirror_0.0.8_amd64.deb"
@@ -801,9 +811,9 @@ mod tests {
         if std::env::var_os("SCREENMIRROR_LIVE_UPDATE").is_none() {
             return;
         }
-        let note = check(env!("CARGO_PKG_VERSION"));
+        let note = check(crate::VERSION);
         match note {
-            UpdateNote::Current { version } => assert_eq!(version, env!("CARGO_PKG_VERSION")),
+            UpdateNote::Current { version } => assert_eq!(version, crate::VERSION),
             other => panic!("expected the published release to be current, got {other:?}"),
         }
     }

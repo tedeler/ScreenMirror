@@ -1,3 +1,9 @@
+screenmirror (1.00) unstable; urgency=medium
+
+  * Release 1.00 with Major.Minor versioning.
+
+ -- Torsten Edeler <torsten.edeler@haw-hamburg.de>  Wed, 18 Nov 2026 11:23:00 +0000
+
 screenmirror (0.0.7) unstable; urgency=medium
 
   * Release 0.0.7.

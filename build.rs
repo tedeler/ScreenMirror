@@ -17,6 +17,13 @@ fn main() {
 
     let git = git_id(&manifest);
     let date = build_date();
+    let major = std::env::var("CARGO_PKG_VERSION_MAJOR").expect("Cargo major version");
+    let minor: u64 = std::env::var("CARGO_PKG_VERSION_MINOR")
+        .expect("Cargo minor version")
+        .parse()
+        .expect("numeric Cargo minor version");
+    assert_eq!(std::env::var("CARGO_PKG_VERSION_PATCH").as_deref(), Ok("0"), "Major.Minor releases require a zero Cargo patch version");
+    assert_eq!(std::env::var("CARGO_PKG_VERSION_PRE").as_deref(), Ok(""), "Major.Minor releases cannot have a Cargo prerelease");
     // Known civil dates, so a broken converter fails the build instead of shipping a wrong Baudatum.
     assert_eq!(format_unix_utc_date(0).as_deref(), Some("1970-01-01"));
     assert_eq!(format_unix_utc_date(86_400).as_deref(), Some("1970-01-02"));
@@ -26,6 +33,7 @@ fn main() {
 
     println!("cargo:rustc-env=SCREENMIRROR_GIT_ID={git}");
     println!("cargo:rustc-env=SCREENMIRROR_BUILD_DATE={date}");
+    println!("cargo:rustc-env=SCREENMIRROR_VERSION={major}.{minor:02}");
     eprintln!("screenmirror: Git-ID {git} Baudatum {date}");
     compile_about_helper(&manifest);
 }

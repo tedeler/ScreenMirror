@@ -10,7 +10,7 @@ Mirror the screen that holds the KDE panel onto the other screen, on Plasma (Way
 
 **Keine Spiegelung** removes the mirror and leaves the process and the tray running, the same as pressing Q while the mirror window is focused. A left click on the tray icon does the same, and a second left click turns that mirror back on: Full, Black, or Zoom with the region that was already chosen. It does not ask for a new region. A right click opens the menu. **Auf diese Arbeitsfläche** moves the current mirror onto the virtual desktop that is current when the item is chosen, keeping the mode and any zoom region. If mirroring is off, that item starts Full on the current desktop.
 
-**Check for updates** asks GitHub whether `tedeler/ScreenMirror` has a release newer than this build. The item's label is the result: `Up to date (0.0.7)` when nothing newer is published, or `Download 0.0.8` when one is. Choosing the download saves that release's `.deb` (or the Linux archive, if the package is missing) into the user's Downloads directory. The check uses the system `curl` because the Rust side has no TLS. The package depends on `curl`.
+**Check for updates** asks GitHub whether `tedeler/ScreenMirror` has a release newer than this build. The item's label is the result: `Up to date (1.00)` when nothing newer is published, or `Download 1.01` when one is. Choosing the download saves that release's `.deb` (or the Linux archive, if the package is missing) into the user's Downloads directory. The check uses the system `curl` because the Rust side has no TLS. The package depends on `curl`.
 
 **Über** starts a separate Qt dialog (`screenmirror-about`). The frame title is „Über ScreenMirror“. The dialog shows the author, the package version, the git commit the binary was built from, and the build date. Schließen, Esc, or the frame's close button dismisses only that dialog. A second click while it is open does not open another one. The mirror and the tray keep running. The Rust code does not draw the dialog.
 
@@ -23,7 +23,7 @@ The Rust side uses only the standard library. The dialog is a small C++ program 
 - `SCREENMIRROR_GIT_ID` — commit id. When it is set and non-empty, it wins over `git rev-parse HEAD`. `debian/rules` sets it from `git rev-parse HEAD`, or from the version in `debian/changelog` when that command fails. GitHub Actions sets it from `GITHUB_SHA`. If neither the variable nor git works, the window shows `unbekannt`.
 - `SOURCE_DATE_EPOCH` — Unix timestamp used as the build date, formatted as UTC `YYYY-MM-DD` (reproducible builds). When it is unset, the date is the current UTC date. If it is set but not an integer, or the clock cannot be read, the window shows `unbekannt`.
 
-The package version is `Cargo.toml`'s `version` (`0.0.7`). `debian/changelog` uses the same version. A missing git checkout or an offline build still compiles.
+Versions use `Major.Minor`, with at least two digits for Minor: this release is `1.00`. Cargo requires three-part SemVer, so `Cargo.toml` and `Cargo.lock` use `1.0.0`; the build derives the displayed `1.00` from Cargo's major and minor numbers and requires a zero patch and no prerelease. `debian/changelog` and release tags use `1.00` and `v1.00` respectively. A missing git checkout or an offline build still compiles.
 
 ## Requirements
 
@@ -39,12 +39,12 @@ cargo build --release
 
 ## Releases
 
-Pushing a version tag (`v*`, for example `v0.0.7`) runs GitHub Actions on `ubuntu-26.04`: it tests, builds a Linux x86_64 release binary and the Debian package from `debian/`, and publishes a GitHub Release with
+Pushing a version tag (`v*`, for example `v1.00`) runs GitHub Actions on `ubuntu-26.04`: it tests, builds a Linux x86_64 release binary and the Debian package from `debian/`, and publishes a GitHub Release with
 `screenmirror-<tag>-x86_64-unknown-linux-gnu.tar.gz` and `screenmirror_<version>_amd64.deb` attached. Pull requests and pushes to `main` also build the `.deb` as a CI artifact on `ubuntu-26.04`. The package is built on that release so `shlibs:Depends` names Qt libraries Kubuntu 26.04 ships.
 
 ```sh
-git tag v0.0.7
-git push origin v0.0.7
+git tag v1.00
+git push origin v1.00
 ```
 
 ## Debian package
@@ -54,10 +54,10 @@ git push origin v0.0.7
 ```sh
 sudo apt install dpkg-dev debhelper cargo rustc g++ pkg-config qt6-base-dev
 dpkg-buildpackage -us -uc
-sudo apt install ../screenmirror_0.0.7_amd64.deb
+sudo apt install ../screenmirror_1.00_amd64.deb
 ```
 
-Build the package on Ubuntu 26.04, the same release as Kubuntu 26.04. The build runs `cargo build --locked --release`. The `.deb` is written next to the source tree (one directory up). Its name follows `debian/changelog` and the host architecture (`screenmirror_0.0.7_amd64.deb` on amd64). It installs:
+Build the package on Ubuntu 26.04, the same release as Kubuntu 26.04. The build runs `cargo build --locked --release`. The `.deb` is written next to the source tree (one directory up). Its name follows `debian/changelog` and the host architecture (`screenmirror_1.00_amd64.deb` on amd64). It installs:
 
 - `/usr/bin/screenmirror`, the release binary.
 - `/usr/libexec/screenmirror-about`, the Qt dialog Über launches.

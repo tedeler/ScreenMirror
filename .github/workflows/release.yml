@@ -30,6 +30,11 @@ jobs:
         run: cargo test --locked
       - name: Release build
         run: cargo build --locked --release
+      - name: Verify release version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test "$(target/release/screenmirror --version)" = "screenmirror $version"
+          test "$(dpkg-parsechangelog --show-field Version)" = "$version"
       - name: Package tarball
         run: |
           staging="screenmirror-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu"

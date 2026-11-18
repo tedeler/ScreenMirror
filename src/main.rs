@@ -15,6 +15,8 @@ mod wayland;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
+const VERSION: &str = env!("SCREENMIRROR_VERSION");
+
 const USAGE: &str = "\
 ScreenMirror – mirror the screen that has the Plasma panel onto the other screen
 
@@ -164,7 +166,7 @@ fn main() {
                 return;
             }
             Some("--version") => {
-                println!("screenmirror {}", env!("CARGO_PKG_VERSION"));
+                println!("screenmirror {VERSION}");
                 return;
             }
             Some("--install") => break install(args.iter().any(|a| a == "--autostart")),
